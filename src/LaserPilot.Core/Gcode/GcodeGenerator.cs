@@ -18,6 +18,8 @@ public sealed class RasterSettings
     public double LineIntervalMm { get; set; } = 0.1;   // distance between scan lines
     public double OverscanMm { get; set; } = 2.5;       // travel past the image so the head is at speed
     public bool BidirectionalScan { get; set; } = true;
+    public DitherMode Dither { get; set; } = DitherMode.FloydSteinberg;
+    public bool Invert { get; set; }
 }
 
 /// <summary>
@@ -85,6 +87,9 @@ public static class GcodeGenerator
     {
         var g = new List<string>();
         if (pxW <= 0 || pxH <= 0 || widthMm <= 0 || heightMm <= 0) return g;
+
+        // Apply invert / dithering (at physical output resolution).
+        (gray, pxW, pxH) = RasterProcessor.Prepare(gray, pxW, pxH, widthMm, heightMm, s);
 
         double pxSizeX = widthMm / pxW;
         int rows = Math.Max(1, (int)Math.Round(heightMm / s.LineIntervalMm));

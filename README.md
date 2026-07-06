@@ -10,6 +10,9 @@ LaserPilot exists because getting a B10 running with existing software too often
 - 🏠 **Safe homing** — pre-flight configuration checks + a time-budgeted homing cycle that soft-resets the controller the moment it runs longer than physically possible
 - ⛔ **Emergency stop** always one click away (GRBL soft reset: instant halt, laser off)
 - 🖼 **Import** SVG, DXF, PNG, JPG, BMP — position, resize, rotate on a visual workspace canvas
+- ✏ **Design in-app** — rectangle/ellipse/line/star shapes, vector **text** in any installed font, and alignment tools
+- 📷 **Photo engraving** with Floyd–Steinberg / Jarvis dithering (plus grayscale-depth and threshold modes, invert option)
+- ✒ **Image trace** — convert logos/line art bitmaps into cuttable vector outlines with a live-preview threshold dialog
 - ⚡ **G-code generation** — vector cut/engrave (M4 dynamic power, multi-pass) and raster image engraving with overscan and bidirectional scanning
 - 🧪 **Material presets** tuned for 10W diode lasers (plywood, MDF, acrylic, leather, slate…)
 - ⬚ **Frame** button traces the job outline with the laser off so you can check placement

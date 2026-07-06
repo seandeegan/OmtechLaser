@@ -48,6 +48,11 @@ public partial class MainWindow : Window
         foreach (var m in MaterialPresets.ForDiode10W) PresetCombo.Items.Add(m);
         PresetCombo.SelectedIndex = 0;
 
+        OpDither.Items.Add("Photo (Floyd–Steinberg)");
+        OpDither.Items.Add("Photo (Jarvis, smoother)");
+        OpDither.Items.Add("Grayscale (depth)");
+        OpDither.Items.Add("Black/white threshold");
+
         RefreshPorts();
         HookGrblEvents();
         UpdateJobButtons(new JobProgress());
@@ -307,6 +312,101 @@ public partial class MainWindow : Window
         return false;
     }
 
+    // ==================== Shapes, text, trace, align ====================
+
+    private void AddItem(DesignItem item)
+    {
+        item.X = (_profile.WidthMm - item.W) / 2;
+        item.Y = (_profile.HeightMm - item.H) / 2;
+        _items.Add(item);
+        _selected = item;
+        SyncItemsList();
+        SyncPropPanel();
+        RedrawCanvas();
+    }
+
+    private void Shape_Click(object sender, RoutedEventArgs e)
+    {
+        if (ShapeBtn.ContextMenu is null) return;
+        ShapeBtn.ContextMenu.PlacementTarget = ShapeBtn;
+        ShapeBtn.ContextMenu.IsOpen = true;
+    }
+
+    private void AddRect_Click(object sender, RoutedEventArgs e) => AddItem(ShapeFactory.Rect());
+    private void AddEllipse_Click(object sender, RoutedEventArgs e) => AddItem(ShapeFactory.Ellipse());
+    private void AddLine_Click(object sender, RoutedEventArgs e) => AddItem(ShapeFactory.Line());
+    private void AddStar_Click(object sender, RoutedEventArgs e) => AddItem(ShapeFactory.Star());
+
+    private void AddText_Click(object sender, RoutedEventArgs e)
+    {
+        var dlg = new TextDialog { Owner = this };
+        if (dlg.ShowDialog() != true) return;
+        try
+        {
+            AddItem(ShapeFactory.Text(dlg.TextValue, dlg.FontValue, dlg.Bold, dlg.Italic, dlg.HeightMm));
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(this, $"Could not create text: {ex.Message}", "Text", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+    }
+
+    private void Trace_Click(object sender, RoutedEventArgs e)
+    {
+        if (_selected is null || !_selected.IsRaster || _selected.Gray is null)
+        {
+            MessageBox.Show(this, "Select an imported image first, then trace it.", "Trace",
+                MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+        var dlg = new TraceDialog(_selected.Gray, _selected.PxW, _selected.PxH) { Owner = this };
+        if (dlg.ShowDialog() != true || dlg.Result is null) return;
+        var traced = DesignItem.FromVector($"Traced {_selected.Name}", dlg.Result);
+        // Same physical size and position as the source image.
+        traced.W = _selected.W;
+        traced.H = _selected.H;
+        traced.X = _selected.X;
+        traced.Y = _selected.Y;
+        _items.Add(traced);
+        _selected = traced;
+        SyncItemsList();
+        SyncPropPanel();
+        RedrawCanvas();
+    }
+
+    private void Align(double? x = null, double? y = null)
+    {
+        if (_selected is null) return;
+        var (bx, by, bw, bh) = _selected.WorkBounds();
+        if (x.HasValue) _selected.X += x.Value - bx;
+        if (y.HasValue) _selected.Y += y.Value - by;
+        SyncPropPanel();
+        RedrawCanvas();
+    }
+
+    private void AlignL_Click(object sender, RoutedEventArgs e) => Align(x: 0);
+    private void AlignCX_Click(object sender, RoutedEventArgs e) { if (_selected is not null) Align(x: (_profile.WidthMm - _selected.WorkBounds().w) / 2); }
+    private void AlignR_Click(object sender, RoutedEventArgs e) { if (_selected is not null) Align(x: _profile.WidthMm - _selected.WorkBounds().w); }
+    private void AlignB_Click(object sender, RoutedEventArgs e) => Align(y: 0);
+    private void AlignCY_Click(object sender, RoutedEventArgs e) { if (_selected is not null) Align(y: (_profile.HeightMm - _selected.WorkBounds().h) / 2); }
+    private void AlignT_Click(object sender, RoutedEventArgs e) { if (_selected is not null) Align(y: _profile.HeightMm - _selected.WorkBounds().h); }
+
+    private static DitherMode DitherFromIndex(int i) => i switch
+    {
+        1 => DitherMode.Jarvis,
+        2 => DitherMode.Grayscale,
+        3 => DitherMode.Threshold,
+        _ => DitherMode.FloydSteinberg,
+    };
+
+    private static int IndexFromDither(DitherMode m) => m switch
+    {
+        DitherMode.Jarvis => 1,
+        DitherMode.Grayscale => 2,
+        DitherMode.Threshold => 3,
+        _ => 0,
+    };
+
     // ==================== Import & items ====================
 
     private void Import_Click(object sender, RoutedEventArgs e)
@@ -412,6 +512,9 @@ public partial class MainWindow : Window
                 OpPasses.Text = "1";
                 OpInterval.Text = _selected.Raster.LineIntervalMm.ToString("0.###", CultureInfo.InvariantCulture);
                 OpInterval.IsEnabled = true; OpPasses.IsEnabled = false;
+                OpDither.SelectedIndex = IndexFromDither(_selected.Raster.Dither);
+                OpInvert.IsChecked = _selected.Raster.Invert;
+                OpDither.IsEnabled = OpInvert.IsEnabled = true;
             }
             else
             {
@@ -420,6 +523,9 @@ public partial class MainWindow : Window
                 OpPasses.Text = _selected.Cut.Passes.ToString(CultureInfo.InvariantCulture);
                 OpInterval.Text = "";
                 OpInterval.IsEnabled = false; OpPasses.IsEnabled = true;
+                OpDither.SelectedIndex = -1;
+                OpInvert.IsChecked = false;
+                OpDither.IsEnabled = OpInvert.IsEnabled = false;
             }
         }
         finally { _suppressPropEvents = false; }
@@ -458,6 +564,8 @@ public partial class MainWindow : Window
             _selected.Raster.SpeedMmMin = Math.Max(1, ParseOr(OpSpeed.Text, _selected.Raster.SpeedMmMin));
             _selected.Raster.MaxPowerPercent = Math.Clamp(ParseOr(OpPower.Text, _selected.Raster.MaxPowerPercent), 0, 100);
             _selected.Raster.LineIntervalMm = Math.Clamp(ParseOr(OpInterval.Text, _selected.Raster.LineIntervalMm), 0.02, 5);
+            if (OpDither.SelectedIndex >= 0) _selected.Raster.Dither = DitherFromIndex(OpDither.SelectedIndex);
+            _selected.Raster.Invert = OpInvert.IsChecked == true;
         }
         else
         {

@@ -20,6 +20,17 @@
                               SelectionChanged="ProfileCombo_SelectionChanged"/>
                     <Separator Width="10" Visibility="Hidden"/>
                     <Button Content="📁 Import…" Click="Import_Click" ToolTip="Import SVG, DXF, PNG, JPG, BMP"/>
+                    <Button x:Name="ShapeBtn" Content="➕ Shape" Click="Shape_Click" ToolTip="Add a rectangle, ellipse, line or star">
+                        <Button.ContextMenu>
+                            <ContextMenu>
+                                <MenuItem Header="▭ Rectangle" Click="AddRect_Click"/>
+                                <MenuItem Header="◯ Ellipse" Click="AddEllipse_Click"/>
+                                <MenuItem Header="─ Line" Click="AddLine_Click"/>
+                                <MenuItem Header="★ Star" Click="AddStar_Click"/>
+                            </ContextMenu>
+                        </Button.ContextMenu>
+                    </Button>
+                    <Button Content="🅰 Text…" Click="AddText_Click" ToolTip="Add vector text (any installed font)"/>
                     <Button Content="🧙 Setup Wizard" Click="Wizard_Click" ToolTip="Guided first-time setup for your machine (strongly recommended)"/>
                     <Button Content="⚙ GRBL Settings" Click="Settings_Click"/>
                 </StackPanel>
@@ -164,6 +175,17 @@
                                 <Button Content="🗑 Delete" Click="DeleteItem_Click"/>
                             </UniformGrid>
                             <Button Content="Center in workspace" Click="CenterItem_Click"/>
+                            <Button x:Name="TraceBtn" Content="✒ Trace image to vectors…" Click="Trace_Click"
+                                    ToolTip="Convert the selected image into cuttable vector outlines"/>
+                            <TextBlock Text="Align to workspace:" Foreground="{StaticResource SubtleTextBrush}" Margin="2,6,0,0" FontSize="11"/>
+                            <UniformGrid Columns="6">
+                                <Button Content="⇤" Click="AlignL_Click" ToolTip="Align left" Padding="4,4"/>
+                                <Button Content="↔" Click="AlignCX_Click" ToolTip="Center horizontally" Padding="4,4"/>
+                                <Button Content="⇥" Click="AlignR_Click" ToolTip="Align right" Padding="4,4"/>
+                                <Button Content="⤒" Click="AlignT_Click" ToolTip="Align top (rear)" Padding="4,4"/>
+                                <Button Content="↕" Click="AlignCY_Click" ToolTip="Center vertically" Padding="4,4"/>
+                                <Button Content="⤓" Click="AlignB_Click" ToolTip="Align bottom (front)" Padding="4,4"/>
+                            </UniformGrid>
                         </StackPanel>
                     </GroupBox>
 
@@ -203,6 +225,12 @@
                                 <Label x:Name="OpIntervalLabel" Content="Line interval mm" Grid.Row="3"/>
                                 <TextBox x:Name="OpInterval" Grid.Row="3" Grid.Column="1" LostFocus="OpProp_Changed"/>
                             </Grid>
+                            <DockPanel x:Name="DitherRow" Margin="0,4,0,0">
+                                <Label Content="Image mode" Width="80"/>
+                                <ComboBox x:Name="OpDither" SelectionChanged="OpProp_Changed"
+                                          ToolTip="Floyd–Steinberg / Jarvis: dithered dots — best for photos. Grayscale: power follows brightness — best for depth. Threshold: pure black/white — logos."/>
+                            </DockPanel>
+                            <CheckBox x:Name="OpInvert" Content="Invert (engrave light areas)" Click="OpProp_Changed"/>
                         </StackPanel>
                     </GroupBox>
 
