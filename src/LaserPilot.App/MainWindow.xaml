@@ -1,0 +1,225 @@
+<Window x:Class="LaserPilot.App.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="LaserPilot" Height="860" Width="1400"
+        Background="{StaticResource BgBrush}"
+        WindowStartupLocation="CenterScreen">
+    <DockPanel>
+
+        <!-- Top toolbar -->
+        <Border DockPanel.Dock="Top" Background="{StaticResource PanelBrush}"
+                BorderBrush="{StaticResource PanelBorderBrush}" BorderThickness="0,0,0,1" Padding="8,6">
+            <DockPanel>
+                <StackPanel Orientation="Horizontal" DockPanel.Dock="Left">
+                    <TextBlock Text="LaserPilot" FontSize="18" FontWeight="Bold" VerticalAlignment="Center"
+                               Foreground="{StaticResource AccentBrush}" Margin="0,0,14,0"/>
+                    <ComboBox x:Name="PortCombo" Width="110" VerticalAlignment="Center"/>
+                    <Button x:Name="RefreshPortsBtn" Content="⟳" ToolTip="Refresh port list" Click="RefreshPorts_Click" Width="32"/>
+                    <Button x:Name="ConnectBtn" Content="Connect" Style="{StaticResource AccentButton}" Click="Connect_Click" Width="100"/>
+                    <ComboBox x:Name="ProfileCombo" Width="220" VerticalAlignment="Center" Margin="10,2,2,2"
+                              SelectionChanged="ProfileCombo_SelectionChanged"/>
+                    <Separator Width="10" Visibility="Hidden"/>
+                    <Button Content="📁 Import…" Click="Import_Click" ToolTip="Import SVG, DXF, PNG, JPG, BMP"/>
+                    <Button Content="🧙 Setup Wizard" Click="Wizard_Click" ToolTip="Guided first-time setup for your machine (strongly recommended)"/>
+                    <Button Content="⚙ GRBL Settings" Click="Settings_Click"/>
+                </StackPanel>
+                <Button x:Name="EStopBtn" DockPanel.Dock="Right" Content="⛔ STOP"
+                        Style="{StaticResource DangerButton}" FontSize="16" Width="120"
+                        ToolTip="Emergency stop: immediately halts all motion and turns the laser off (GRBL soft reset)"
+                        Click="EStop_Click" HorizontalAlignment="Right"/>
+                <Border/>
+            </DockPanel>
+        </Border>
+
+        <!-- Status bar -->
+        <StatusBar DockPanel.Dock="Bottom">
+            <StatusBarItem>
+                <StackPanel Orientation="Horizontal">
+                    <Border x:Name="StateBadge" CornerRadius="4" Padding="8,2" Background="#FF555555">
+                        <TextBlock x:Name="StateText" Text="Disconnected" FontWeight="SemiBold"/>
+                    </Border>
+                    <TextBlock x:Name="PosText" Margin="14,0,0,0" VerticalAlignment="Center"
+                               FontFamily="Consolas" Text="X 0.00  Y 0.00"/>
+                    <TextBlock x:Name="FirmwareText" Margin="14,0,0,0" VerticalAlignment="Center"
+                               Foreground="{StaticResource SubtleTextBrush}"/>
+                </StackPanel>
+            </StatusBarItem>
+            <StatusBarItem HorizontalAlignment="Right">
+                <StackPanel Orientation="Horizontal">
+                    <TextBlock x:Name="JobText" VerticalAlignment="Center" Margin="0,0,8,0"/>
+                    <ProgressBar x:Name="JobProgress" Width="180"/>
+                </StackPanel>
+            </StatusBarItem>
+        </StatusBar>
+
+        <!-- Console -->
+        <Expander DockPanel.Dock="Bottom" Header="Console" IsExpanded="False"
+                  Background="{StaticResource PanelBrush}" Foreground="{StaticResource SubtleTextBrush}">
+            <DockPanel Height="180">
+                <DockPanel DockPanel.Dock="Bottom" Margin="4">
+                    <Button DockPanel.Dock="Right" Content="Send" Click="ConsoleSend_Click" Width="70"/>
+                    <TextBox x:Name="ConsoleInput" FontFamily="Consolas" KeyDown="ConsoleInput_KeyDown"
+                             ToolTip="Type a GRBL command ($$, $H, G0 X10 …) and press Enter"/>
+                </DockPanel>
+                <ListBox x:Name="ConsoleList" FontFamily="Consolas" FontSize="12"
+                         Background="#FF141519" Foreground="#FFCCCCCC" BorderThickness="0"
+                         VirtualizingPanel.IsVirtualizing="True"/>
+            </DockPanel>
+        </Expander>
+
+        <!-- Main area -->
+        <Grid>
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="250"/>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="290"/>
+            </Grid.ColumnDefinitions>
+
+            <!-- Left: machine control -->
+            <ScrollViewer Grid.Column="0" VerticalScrollBarVisibility="Auto">
+                <StackPanel>
+                    <GroupBox Header="Machine">
+                        <StackPanel>
+                            <Button x:Name="HomeBtn" Content="🏠 Home (safe)" Click="Home_Click"
+                                    ToolTip="Runs pre-flight checks, then a supervised homing cycle that auto-aborts if it takes too long"/>
+                            <UniformGrid Columns="2">
+                                <Button Content="🔓 Unlock" Click="Unlock_Click" ToolTip="$X — clear an alarm state"/>
+                                <Button Content="↺ Reset" Click="Reset_Click" ToolTip="GRBL soft reset"/>
+                            </UniformGrid>
+                            <Button Content="📍 Set origin here" Click="SetOrigin_Click"
+                                    ToolTip="Sets the current position as work X0 Y0 (G10 L20). Use this if your machine has no working homing."/>
+                            <Button Content="➤ Go to origin" Click="GotoOrigin_Click"/>
+                        </StackPanel>
+                    </GroupBox>
+
+                    <GroupBox Header="Jog">
+                        <StackPanel>
+                            <UniformGrid Columns="3" Height="120">
+                                <Border/>
+                                <Button Content="▲" FontSize="16" Click="JogYPlus_Click" ToolTip="Y+ (away from you)"/>
+                                <Border/>
+                                <Button Content="◀" FontSize="16" Click="JogXMinus_Click"/>
+                                <Button Content="●" Click="JogCancel_Click" ToolTip="Cancel jog"/>
+                                <Button Content="▶" FontSize="16" Click="JogXPlus_Click"/>
+                                <Border/>
+                                <Button Content="▼" FontSize="16" Click="JogYMinus_Click" ToolTip="Y− (toward you)"/>
+                                <Border/>
+                            </UniformGrid>
+                            <DockPanel Margin="0,4,0,0">
+                                <Label Content="Step" Width="46"/>
+                                <ComboBox x:Name="JogStepCombo" SelectedIndex="2">
+                                    <ComboBoxItem>0.1 mm</ComboBoxItem>
+                                    <ComboBoxItem>1 mm</ComboBoxItem>
+                                    <ComboBoxItem>10 mm</ComboBoxItem>
+                                    <ComboBoxItem>50 mm</ComboBoxItem>
+                                    <ComboBoxItem>100 mm</ComboBoxItem>
+                                </ComboBox>
+                            </DockPanel>
+                            <DockPanel>
+                                <Label Content="Speed" Width="46"/>
+                                <ComboBox x:Name="JogFeedCombo" SelectedIndex="1">
+                                    <ComboBoxItem>500 mm/min</ComboBoxItem>
+                                    <ComboBoxItem>2000 mm/min</ComboBoxItem>
+                                    <ComboBoxItem>4000 mm/min</ComboBoxItem>
+                                </ComboBox>
+                            </DockPanel>
+                        </StackPanel>
+                    </GroupBox>
+
+                    <GroupBox Header="Laser (pulse to focus)">
+                        <StackPanel>
+                            <DockPanel>
+                                <Label Content="Power" Width="46"/>
+                                <TextBox x:Name="PulsePowerBox" Text="1"/>
+                                <Label Content="%"/>
+                            </DockPanel>
+                            <UniformGrid Columns="2">
+                                <Button Content="🔦 Laser on" Click="LaserOn_Click"
+                                        ToolTip="Fires the laser at the low power above so you can focus. WEAR YOUR GOGGLES."/>
+                                <Button Content="Laser off" Click="LaserOff_Click"/>
+                            </UniformGrid>
+                        </StackPanel>
+                    </GroupBox>
+                </StackPanel>
+            </ScrollViewer>
+
+            <!-- Center: workspace canvas -->
+            <Border Grid.Column="1" Background="{StaticResource CanvasBgBrush}"
+                    BorderBrush="{StaticResource PanelBorderBrush}" BorderThickness="1" Margin="4" ClipToBounds="True">
+                <Canvas x:Name="WorkCanvas" Background="Transparent"
+                        MouseWheel="Canvas_MouseWheel"
+                        MouseDown="Canvas_MouseDown" MouseMove="Canvas_MouseMove" MouseUp="Canvas_MouseUp"
+                        SizeChanged="Canvas_SizeChanged"/>
+            </Border>
+
+            <!-- Right: design + job -->
+            <ScrollViewer Grid.Column="2" VerticalScrollBarVisibility="Auto">
+                <StackPanel>
+                    <GroupBox Header="Design items">
+                        <StackPanel>
+                            <ListBox x:Name="ItemsList" Height="90" Background="#FF17181C" Foreground="{StaticResource TextBrush}"
+                                     BorderBrush="{StaticResource PanelBorderBrush}" SelectionChanged="ItemsList_SelectionChanged"/>
+                            <UniformGrid Columns="2">
+                                <Button Content="⟳ Rotate 90°" Click="Rotate90_Click"/>
+                                <Button Content="🗑 Delete" Click="DeleteItem_Click"/>
+                            </UniformGrid>
+                            <Button Content="Center in workspace" Click="CenterItem_Click"/>
+                        </StackPanel>
+                    </GroupBox>
+
+                    <GroupBox Header="Position &amp; size (mm)">
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/>
+                            </Grid.ColumnDefinitions>
+                            <Grid.RowDefinitions>
+                                <RowDefinition/><RowDefinition/><RowDefinition/>
+                            </Grid.RowDefinitions>
+                            <Label Content="X"/><TextBox x:Name="ItemX" Grid.Column="1" LostFocus="ItemProp_Changed"/>
+                            <Label Content="Y" Grid.Column="2"/><TextBox x:Name="ItemY" Grid.Column="3" LostFocus="ItemProp_Changed"/>
+                            <Label Content="W" Grid.Row="1"/><TextBox x:Name="ItemW" Grid.Row="1" Grid.Column="1" LostFocus="ItemProp_Changed"/>
+                            <Label Content="H" Grid.Row="1" Grid.Column="2"/><TextBox x:Name="ItemH" Grid.Row="1" Grid.Column="3" LostFocus="ItemProp_Changed"/>
+                            <Label Content="Rot°" Grid.Row="2"/><TextBox x:Name="ItemRot" Grid.Row="2" Grid.Column="1" LostFocus="ItemProp_Changed"/>
+                            <CheckBox x:Name="KeepAspect" Content="Lock aspect" Grid.Row="2" Grid.Column="2" Grid.ColumnSpan="2"
+                                      IsChecked="True" VerticalAlignment="Center"/>
+                        </Grid>
+                    </GroupBox>
+
+                    <GroupBox Header="Operation">
+                        <StackPanel>
+                            <ComboBox x:Name="PresetCombo" SelectionChanged="Preset_SelectionChanged"
+                                      ToolTip="Material presets for a 10W diode laser — starting points, always test on scrap"/>
+                            <Grid Margin="0,4,0,0">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/>
+                                </Grid.ColumnDefinitions>
+                                <Grid.RowDefinitions>
+                                    <RowDefinition/><RowDefinition/><RowDefinition/><RowDefinition/>
+                                </Grid.RowDefinitions>
+                                <Label Content="Speed mm/min"/><TextBox x:Name="OpSpeed" Grid.Column="1" LostFocus="OpProp_Changed"/>
+                                <Label Content="Power %" Grid.Row="1"/><TextBox x:Name="OpPower" Grid.Row="1" Grid.Column="1" LostFocus="OpProp_Changed"/>
+                                <Label Content="Passes" Grid.Row="2"/><TextBox x:Name="OpPasses" Grid.Row="2" Grid.Column="1" LostFocus="OpProp_Changed"/>
+                                <Label x:Name="OpIntervalLabel" Content="Line interval mm" Grid.Row="3"/>
+                                <TextBox x:Name="OpInterval" Grid.Row="3" Grid.Column="1" LostFocus="OpProp_Changed"/>
+                            </Grid>
+                        </StackPanel>
+                    </GroupBox>
+
+                    <GroupBox Header="Job">
+                        <StackPanel>
+                            <Button Content="⬚ Frame job area" Click="Frame_Click"
+                                    ToolTip="Moves the head (laser off) around the outline of everything you've placed, so you can check the position on your material"/>
+                            <Button Content="👁 Preview G-code…" Click="PreviewGcode_Click"/>
+                            <Button x:Name="StartBtn" Content="▶ START" Style="{StaticResource AccentButton}" FontSize="15" Click="Start_Click"/>
+                            <UniformGrid Columns="2">
+                                <Button x:Name="PauseBtn" Content="⏸ Pause" Click="Pause_Click"/>
+                                <Button x:Name="StopBtn" Content="⏹ Stop" Click="StopJob_Click"/>
+                            </UniformGrid>
+                        </StackPanel>
+                    </GroupBox>
+                </StackPanel>
+            </ScrollViewer>
+        </Grid>
+    </DockPanel>
+</Window>

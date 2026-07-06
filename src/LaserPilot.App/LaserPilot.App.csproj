@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <UseWPF>true</UseWPF>
+    <AssemblyName>LaserPilot</AssemblyName>
+    <ApplicationIcon />
+    <Version>0.1.0</Version>
+    <Product>LaserPilot</Product>
+    <Description>Modern, safety-first GRBL laser control software with first-class OMTech Light B10 support.</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\LaserPilot.Core\LaserPilot.Core.csproj" />
+  </ItemGroup>
+
+</Project>

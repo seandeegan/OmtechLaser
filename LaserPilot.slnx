@@ -1,0 +1,6 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/LaserPilot.App/LaserPilot.App.csproj" />
+    <Project Path="src/LaserPilot.Core/LaserPilot.Core.csproj" />
+  </Folder>
+</Solution>
