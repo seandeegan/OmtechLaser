@@ -152,17 +152,24 @@ public partial class MainWindow : Window
         try
         {
             ConnectBtn.IsEnabled = false;
+            ConnectBtn.Content = "Connecting…";
+            StateText.Text = "Connecting…";
+            StateBadge.Background = (Brush)FindResource("WarnBrush");
             await Task.Run(() => _grbl.Connect(port, _profile.Baud));
             await Task.Delay(600);
             await _grbl.RefreshSettingsAsync();
         }
         catch (Exception ex)
         {
-            MessageBox.Show(this, $"Could not open {port}:\n{ex.Message}\n\n" +
+            MessageBox.Show(this, $"Could not connect to {port}:\n{ex.Message}\n\n" +
                 "Close any other program using the port (LightBurn, LaserGRBL, Arduino IDE…) and try again.",
                 "Connection failed", MessageBoxButton.OK, MessageBoxImage.Error);
         }
-        finally { ConnectBtn.IsEnabled = true; }
+        finally
+        {
+            ConnectBtn.IsEnabled = true;
+            UpdateConnectionUi();
+        }
     }
 
     private void ProfileCombo_SelectionChanged(object sender, SelectionChangedEventArgs e)

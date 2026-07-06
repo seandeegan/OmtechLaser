@@ -1,7 +1,7 @@
 using System.Collections.Concurrent;
 using System.Globalization;
-using System.IO.Ports;
 using System.Text;
+using RJCP.IO.Ports;
 
 namespace LaserPilot.Core.Comm;
 
@@ -33,14 +33,19 @@ public sealed class GrblController : IDisposable
 {
     private const int RxBufferSize = 127;      // GRBL 1.1 serial RX buffer
     private const int StatusPollMs = 200;
+    private const int InitialConnectWaitMs = 2500;
+    private const int ResetRetryWaitMs = 4000;
 
-    private SerialPort? _port;
+    private SerialPortStream? _port;
     private CancellationTokenSource? _cts;
     private Task? _readTask;
     private Task? _pollTask;
+    private TaskCompletionSource<bool>? _connectionReady;
+    private volatile bool _controllerResponsive;
 
     private readonly object _sync = new();
-    private readonly StringBuilder _rxLine = new();
+    private readonly object _connectionSync = new();
+    private readonly object _writeSync = new();
 
     // Interactive commands awaiting ok/error (FIFO, matches GRBL response order).
     private readonly ConcurrentQueue<PendingCommand> _pending = new();
@@ -59,7 +64,11 @@ public sealed class GrblController : IDisposable
 
     public sealed record GrblResponse(bool Ok, int ErrorCode, string ErrorText);
 
-    public bool IsConnected => _port?.IsOpen == true;
+    private int _bytesReceived;
+    private int _linesReceived;
+
+    private bool IsPortOpen => _port?.IsOpen == true;
+    public bool IsConnected => _controllerResponsive && IsPortOpen;
     public bool IsJobRunning { get; private set; }
     public bool IsJobPaused => _jobPaused;
     public GrblStatus Status { get; private set; } = new() { State = MachineState.Disconnected };
@@ -74,40 +83,138 @@ public sealed class GrblController : IDisposable
     public event Action? SettingsRefreshed;
     public event Action? ConnectionChanged;
 
-    public static string[] ListPorts() => SerialPort.GetPortNames().Distinct().OrderBy(p => p).ToArray();
+    public static string[] ListPorts()
+    {
+        using var serial = new SerialPortStream();
+        return serial.GetPortNames()
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .OrderBy(p => p, StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+    }
 
     public void Connect(string portName, int baud = 115200)
     {
+        ArgumentException.ThrowIfNullOrWhiteSpace(portName);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(baud);
         Disconnect();
-        _port = new SerialPort(portName, baud)
+
+        // LaserGRBL leaves these control lines off for normal GRBL connections.
+        // Some USB controllers use DTR/RTS as reset or enable pins and can be
+        // held in reset when they are asserted continuously.
+        var port = new SerialPortStream(portName, baud, 8, Parity.None, StopBits.One)
         {
             NewLine = "\n",
             ReadTimeout = 500,
             WriteTimeout = 2000,
-            DtrEnable = true,
-            RtsEnable = true,
+            Handshake = Handshake.None,
+            DtrEnable = false,
+            RtsEnable = false,
             Encoding = Encoding.ASCII,
         };
-        _port.Open();
-        _cts = new CancellationTokenSource();
-        _readTask = Task.Run(() => ReadLoop(_cts.Token));
-        _pollTask = Task.Run(() => PollLoop(_cts.Token));
 
-        // Wake GRBL and flush any boot noise.
-        Thread.Sleep(300);
-        WriteRaw("\r\n\r\n");
-        Info($"Connected to {portName} @ {baud} baud");
-        ConnectionChanged?.Invoke();
+        var cts = new CancellationTokenSource();
+        var ready = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        try
+        {
+            port.Open();
+            port.DiscardInBuffer();
+            port.DiscardOutBuffer();
+
+            lock (_connectionSync)
+            {
+                _port = port;
+                _cts = cts;
+                _connectionReady = ready;
+                _controllerResponsive = false;
+                Interlocked.Exchange(ref _bytesReceived, 0);
+                Interlocked.Exchange(ref _linesReceived, 0);
+                _readTask = Task.Run(() => ReadLoop(port, cts.Token));
+                _pollTask = Task.Run(() => PollLoop(port, cts.Token));
+            }
+
+            Info($"Port {portName} opened @ {baud} baud; probing for GRBL…");
+
+            // A GRBL soft reset produces its hello line. Status polling also
+            // provides a non-destructive path to detect a responsive board.
+            WriteByte(port, 0x18);
+            if (WaitForController(ready, InitialConnectWaitMs)) return;
+            ThrowIfConnectionWasClosed(port);
+
+            // Retry the hardware-reset transition used by Arduino/CH340-style
+            // boards, but release the lines again so they cannot hold the MCU
+            // in reset.
+            Info("No reply with DTR/RTS off; trying a brief USB control-line reset…");
+            PulseResetLines(port);
+            Thread.Sleep(300);
+            WriteByte(port, 0x18);
+            if (WaitForController(ready, ResetRetryWaitMs)) return;
+            ThrowIfConnectionWasClosed(port);
+
+            var bytes = Volatile.Read(ref _bytesReceived);
+            var lines = Volatile.Read(ref _linesReceived);
+            var detail = bytes == 0
+                ? "No bytes were received from the controller."
+                : $"{bytes} byte(s) in {lines} complete line(s) were received, but none was a valid GRBL response.";
+            var message =
+                $"{portName} opened at {baud} baud, but GRBL did not answer. {detail} " +
+                "LaserPilot tried both a GRBL soft reset and a brief DTR/RTS reset. " +
+                "Close LightBurn/LaserGRBL completely, power-cycle the laser, and verify that this is the same COM port and baud rate they use.";
+            Error(message);
+            throw new TimeoutException(message);
+        }
+        catch
+        {
+            if (ReferenceEquals(_port, port))
+                Disconnect();
+            else
+            {
+                cts.Cancel();
+                try { port.Close(); } catch { }
+                port.Dispose();
+                cts.Dispose();
+            }
+            throw;
+        }
     }
 
     public void Disconnect()
     {
         StopJobInternal(sendReset: false);
-        _cts?.Cancel();
-        try { _port?.Close(); } catch { /* port may already be gone */ }
-        _port?.Dispose();
-        _port = null;
+
+        SerialPortStream? port;
+        CancellationTokenSource? cts;
+        TaskCompletionSource<bool>? ready;
+        Task? readTask;
+        Task? pollTask;
+        lock (_connectionSync)
+        {
+            port = _port;
+            cts = _cts;
+            ready = _connectionReady;
+            readTask = _readTask;
+            pollTask = _pollTask;
+            _port = null;
+            _cts = null;
+            _readTask = null;
+            _pollTask = null;
+            _connectionReady = null;
+            _controllerResponsive = false;
+        }
+
+        ready?.TrySetResult(false);
+        cts?.Cancel();
+        try { port?.Close(); } catch { /* port may already be gone */ }
+        try
+        {
+            var tasks = new[] { readTask, pollTask }.Where(t => t is not null).Cast<Task>().ToArray();
+            if (tasks.Length > 0) Task.WaitAll(tasks, 1000);
+        }
+        catch { /* cancellation/port closure can fault a worker while disconnecting */ }
+        port?.Dispose();
+        cts?.Dispose();
         FailAllPending("disconnected");
+        FirmwareVersion = "";
+        lock (_sync) _settings.Clear();
         Status = new GrblStatus { State = MachineState.Disconnected };
         StatusUpdated?.Invoke(Status);
         ConnectionChanged?.Invoke();
@@ -332,16 +439,41 @@ public sealed class GrblController : IDisposable
 
     private void WriteRaw(string s)
     {
-        try { _port?.Write(s); }
-        catch (Exception ex) { Error($"Serial write failed: {ex.Message}"); }
+        var port = _port;
+        if (port is not null) WriteRaw(port, s);
     }
 
     private void WriteByte(byte b)
     {
+        var port = _port;
+        if (port is not null) WriteByte(port, b);
+    }
+
+    private void WriteRaw(SerialPortStream port, string s)
+    {
         try
         {
-            var port = _port;
-            if (port?.IsOpen == true) { port.BaseStream.WriteByte(b); port.BaseStream.Flush(); }
+            var bytes = Encoding.ASCII.GetBytes(s);
+            lock (_writeSync)
+            {
+                if (!port.IsOpen) return;
+                port.Write(bytes, 0, bytes.Length);
+                port.Flush();
+            }
+        }
+        catch (Exception ex) { Error($"Serial write failed: {ex.Message}"); }
+    }
+
+    private void WriteByte(SerialPortStream port, byte b)
+    {
+        try
+        {
+            lock (_writeSync)
+            {
+                if (!port.IsOpen) return;
+                port.WriteByte(b);
+                port.Flush();
+            }
         }
         catch (Exception ex) { Error($"Serial write failed: {ex.Message}"); }
     }
@@ -352,30 +484,32 @@ public sealed class GrblController : IDisposable
         WriteRaw(line + "\n");
     }
 
-    private void ReadLoop(CancellationToken ct)
+    private void ReadLoop(SerialPortStream port, CancellationToken ct)
     {
         var buf = new byte[1024];
+        var rxLine = new StringBuilder();
         while (!ct.IsCancellationRequested)
         {
             try
             {
-                var port = _port;
-                if (port is null || !port.IsOpen) { Thread.Sleep(100); continue; }
-                int n = port.BaseStream.Read(buf, 0, buf.Length);
+                if (!port.IsOpen) return;
+                int n = port.Read(buf, 0, buf.Length);
+                if (n <= 0) continue;
+                Interlocked.Add(ref _bytesReceived, n);
                 for (int i = 0; i < n; i++)
                 {
                     char c = (char)buf[i];
                     if (c == '\n' || c == '\r')
                     {
-                        if (_rxLine.Length > 0)
+                        if (rxLine.Length > 0)
                         {
-                            var line = _rxLine.ToString();
-                            _rxLine.Clear();
-                            try { HandleLine(line); }
+                            var line = rxLine.ToString();
+                            rxLine.Clear();
+                            try { HandleLine(port, line); }
                             catch (Exception ex) { Error($"Parse error on '{line}': {ex.Message}"); }
                         }
                     }
-                    else _rxLine.Append(c);
+                    else rxLine.Append(c);
                 }
             }
             catch (OperationCanceledException) { return; }
@@ -389,22 +523,26 @@ public sealed class GrblController : IDisposable
         }
     }
 
-    private void PollLoop(CancellationToken ct)
+    private void PollLoop(SerialPortStream port, CancellationToken ct)
     {
         while (!ct.IsCancellationRequested)
         {
-            if (IsConnected) WriteRaw("?");
-            Thread.Sleep(StatusPollMs);
+            if (!port.IsOpen) return;
+            WriteRaw(port, "?");
+            if (ct.WaitHandle.WaitOne(StatusPollMs)) return;
         }
     }
 
-    private void HandleLine(string line)
+    private void HandleLine(SerialPortStream source, string line)
     {
+        Interlocked.Increment(ref _linesReceived);
+
         // Status reports are frequent — don't log them.
         if (line.StartsWith('<'))
         {
             if (GrblStatus.TryParse(line, Status, out var st))
             {
+                MarkControllerResponsive(source);
                 Status = st;
                 StatusUpdated?.Invoke(st);
             }
@@ -412,6 +550,7 @@ public sealed class GrblController : IDisposable
         }
 
         Log?.Invoke(new LogEntry { Direction = LogDirection.Received, Text = line });
+        if (IsRecognizedGrblLine(line)) MarkControllerResponsive(source);
 
         if (line == "ok")
         {
@@ -450,6 +589,68 @@ public sealed class GrblController : IDisposable
             }
         }
         // [MSG:...], [VER:...], [OPT:...], feedback lines — already logged above.
+    }
+
+    private static bool IsRecognizedGrblLine(string line) =>
+        line == "ok" ||
+        line.StartsWith("Grbl", StringComparison.OrdinalIgnoreCase) ||
+        line.StartsWith("error:", StringComparison.OrdinalIgnoreCase) ||
+        line.StartsWith("ALARM:", StringComparison.OrdinalIgnoreCase) ||
+        line.StartsWith('$') ||
+        line.StartsWith("[MSG:", StringComparison.OrdinalIgnoreCase) ||
+        line.StartsWith("[VER:", StringComparison.OrdinalIgnoreCase) ||
+        line.StartsWith("[OPT:", StringComparison.OrdinalIgnoreCase);
+
+    private void MarkControllerResponsive(SerialPortStream source)
+    {
+        TaskCompletionSource<bool>? ready;
+        lock (_connectionSync)
+        {
+            if (!ReferenceEquals(_port, source) || _controllerResponsive) return;
+            _controllerResponsive = true;
+            ready = _connectionReady;
+        }
+
+        ready?.TrySetResult(true);
+        Info($"GRBL responded on {source.PortName}; connection ready.");
+        ConnectionChanged?.Invoke();
+    }
+
+    private static bool WaitForController(TaskCompletionSource<bool> ready, int timeoutMs) =>
+        ready.Task.Wait(timeoutMs) && ready.Task.GetAwaiter().GetResult();
+
+    private void ThrowIfConnectionWasClosed(SerialPortStream port)
+    {
+        if (!ReferenceEquals(_port, port) || !port.IsOpen)
+            throw new IOException("The serial connection was closed while waiting for GRBL.");
+    }
+
+    private void PulseResetLines(SerialPortStream port)
+    {
+        try
+        {
+            lock (_writeSync)
+            {
+                if (!port.IsOpen) return;
+                try
+                {
+                    port.DtrEnable = true;
+                    port.RtsEnable = true;
+                    Thread.Sleep(100);
+                }
+                finally
+                {
+                    // Release each line independently; if a driver rejects one,
+                    // still make a best effort not to leave the other asserted.
+                    try { port.DtrEnable = false; } catch { }
+                    try { port.RtsEnable = false; } catch { }
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Info($"USB control-line reset was unavailable: {ex.Message}");
+        }
     }
 
     private void AckLine(bool ok, int errorCode, string raw)
