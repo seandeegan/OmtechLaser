@@ -4,7 +4,9 @@ namespace LaserPilot.Core.Comm;
 public static class GrblCodes
 {
     public static string ErrorText(int code) => Errors.TryGetValue(code, out var t) ? t : $"Unknown error {code}";
-    public static string AlarmText(int code) => Alarms.TryGetValue(code, out var t) ? t : $"Unknown alarm {code}";
+    public static string AlarmText(int code) => Alarms.TryGetValue(code, out var t) ? t :
+        $"Unknown alarm {code}. Some lasers use extra alarm codes for their flame or tilt sensor — " +
+        "if the machine is beeping, check for flames FIRST, then check the sensor wiring.";
 
     public static readonly Dictionary<int, string> Errors = new()
     {

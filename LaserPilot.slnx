@@ -3,4 +3,8 @@
     <Project Path="src/LaserPilot.App/LaserPilot.App.csproj" />
     <Project Path="src/LaserPilot.Core/LaserPilot.Core.csproj" />
   </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/LaserPilot.App.Tests/LaserPilot.App.Tests.csproj" />
+    <Project Path="tests/LaserPilot.Core.Tests/LaserPilot.Core.Tests.csproj" />
+  </Folder>
 </Solution>

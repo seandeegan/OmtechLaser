@@ -7,11 +7,38 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <UseWPF>true</UseWPF>
     <AssemblyName>LaserPilot</AssemblyName>
+    <RootNamespace>LaserPilot.App</RootNamespace>
     <ApplicationIcon />
-    <Version>0.1.0</Version>
     <Product>LaserPilot</Product>
     <Description>Modern, safety-first GRBL laser control software with first-class OMTech Light B10 support.</Description>
+
+    <!--
+      Versioning: bump VersionBase for big releases. CI appends the build
+      number (-p:BuildNumber=N), so every push to main produces a newer
+      version the auto-updater can offer. Local builds use 0 ("dev build").
+    -->
+    <VersionBase>0.2</VersionBase>
+    <BuildNumber Condition="'$(BuildNumber)' == ''">0</BuildNumber>
+    <Version>$(VersionBase).$(BuildNumber)</Version>
+
+    <!-- Where the auto-updater looks for releases. -->
+    <UpdateRepository Condition="'$(UpdateRepository)' == ''">seandeegan/OmtechLaser</UpdateRepository>
   </PropertyGroup>
+
+  <ItemGroup>
+    <AssemblyMetadata Include="UpdateRepository" Value="$(UpdateRepository)" />
+  </ItemGroup>
+
+  <!-- Optional read-only GitHub token for private-repo updates, written by CI from a
+       repository secret. Never committed (see .gitignore). -->
+  <ItemGroup Condition="Exists('update.key')">
+    <EmbeddedResource Include="update.key" LogicalName="LaserPilot.update.key" />
+  </ItemGroup>
+
+  <!-- The guides in docs/ are viewable from the Help menu. -->
+  <ItemGroup>
+    <EmbeddedResource Include="..\..\docs\*.md" LogicalName="LaserPilot.docs.%(Filename)%(Extension)" Link="docs\%(Filename)%(Extension)" />
+  </ItemGroup>
 
   <ItemGroup>
     <ProjectReference Include="..\LaserPilot.Core\LaserPilot.Core.csproj" />

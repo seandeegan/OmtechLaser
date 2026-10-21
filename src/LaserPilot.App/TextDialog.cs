@@ -7,7 +7,7 @@ namespace LaserPilot.App;
 /// <summary>Small dialog for adding vector text: content, font, size, style.</summary>
 public sealed class TextDialog : Window
 {
-    private readonly TextBox _text = new() { MinHeight = 60, TextWrapping = TextWrapping.Wrap, AcceptsReturn = true };
+    private readonly TextBox _text = new() { MinHeight = 70, TextWrapping = TextWrapping.Wrap, AcceptsReturn = true };
     private readonly ComboBox _font = new();
     private readonly TextBox _height = new() { Text = "20" };
     private readonly CheckBox _bold = new() { Content = "Bold" };
@@ -15,16 +15,18 @@ public sealed class TextDialog : Window
 
     public string TextValue => _text.Text;
     public string FontValue => _font.SelectedItem?.ToString() ?? "Arial";
-    public double HeightMm => double.TryParse(_height.Text, out var v) && v > 0 ? v : 20;
+    public double HeightMm => MainWindow.TryParseNumber(_height.Text, out var v) && v > 0 ? Math.Min(v, 400) : 20;
     public bool Bold => _bold.IsChecked == true;
     public bool Italic => _italic.IsChecked == true;
 
     public TextDialog()
     {
+        Style = (Style)Application.Current.Resources["DarkWindow"];
+        _text.Style = (Style)Application.Current.Resources["TextArea"];
         Title = "Add text";
-        Width = 420; Height = 340;
+        Width = 440;
+        SizeToContent = SizeToContent.Height;
         WindowStartupLocation = WindowStartupLocation.CenterOwner;
-        Background = (Brush)Application.Current.Resources["BgBrush"];
         ResizeMode = ResizeMode.NoResize;
 
         foreach (var f in Fonts.SystemFontFamilies.Select(f => f.Source).OrderBy(s => s))
@@ -38,7 +40,7 @@ public sealed class TextDialog : Window
         sp.Children.Add(_font);
 
         var row = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 6, 0, 0) };
-        row.Children.Add(new Label { Content = "Height (mm)" });
+        row.Children.Add(new Label { Content = "Letter height (mm)", ToolTip = "Height of a capital letter. 20 mm ≈ the height of a fingertip." });
         _height.Width = 60;
         row.Children.Add(_height);
         row.Children.Add(_bold);

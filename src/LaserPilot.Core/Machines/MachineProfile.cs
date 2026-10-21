@@ -23,11 +23,24 @@ public sealed class MachineProfile
     public bool HasLimitSwitches { get; init; }
 
     public double MaxPowerS { get; init; } = 1000;    // $30
-    public double MaxFeedXy { get; init; } = 6000;    // mm/min
+    /// <summary>Fastest speed the machine is rated for (mm/min).</summary>
+    public double MaxFeedXy { get; init; } = 6000;
+    /// <summary>Typical acceleration (mm/s²) — used for time estimates until the controller reports $120/$121.</summary>
+    public double AccelXy { get; init; } = 1000;
+    /// <summary>Laser spot size (mm): the finest useful line interval.</summary>
+    public double SpotSizeMm { get; init; } = 0.1;
 
     /// <summary>Recommended GRBL settings ($ number → value). Applied only
     /// with explicit user consent, one at a time, with read-back verification.</summary>
     public Dictionary<int, double> RecommendedSettings { get; init; } = new();
+
+    /// <summary>
+    /// Factory calibration values shown for comparison only. They are never
+    /// written automatically: steps/mm, speed and acceleration are tuned per
+    /// machine at the factory, and a wrong guess would silently change the
+    /// size of every engraving or cap the machine's speed.
+    /// </summary>
+    public Dictionary<int, double> ReferenceSettings { get; init; } = new();
 
     public override string ToString() => Name;
 
@@ -51,12 +64,16 @@ public sealed class MachineProfile
     ///    verified, so jogs and jobs can never leave the work area.
     ///  • $32=1 laser mode so moves without S power don't burn, and
     ///    power scales with speed during acceleration (no charred corners).
+    ///
+    /// Hardware facts (OMTech spec sheet): 10 W optical output, 450 nm,
+    /// 0.07×0.07 mm spot, 250 mm/s max speed, built-in air assist, flame
+    /// sensor on the frame, USB + MicroSD, firmware reports "Grbl 1.1h".
     /// </summary>
     public static MachineProfile OmtechB10 => new()
     {
         Id = "omtech-light-b10",
         Name = "OMTech Light B10 (10W diode)",
-        Notes = "400×400 mm work area, GRBL 1.1, limit switches front-left. " +
+        Notes = "400×400 mm work area, GRBL 1.1h, limit switches front-left, flame sensor, air assist. " +
                 "Run the Setup Wizard before first use to verify homing direction safely.",
         WidthMm = 400,
         HeightMm = 400,
@@ -64,10 +81,11 @@ public sealed class MachineProfile
         Origin = OriginCorner.FrontLeft,
         HasLimitSwitches = true,
         MaxPowerS = 1000,
-        MaxFeedXy = 6000,
+        MaxFeedXy = 15000,
+        AccelXy = 1500,
+        SpotSizeMm = 0.07,
         RecommendedSettings = new Dictionary<int, double>
         {
-            [10] = 1,     // status report: MPos
             [20] = 1,     // soft limits ON (requires homing) — protects rails
             [21] = 1,     // hard limits ON — switches also act as crash guards
             [22] = 1,     // homing cycle enabled
@@ -79,14 +97,15 @@ public sealed class MachineProfile
             [30] = 1000,  // max spindle/laser S value
             [31] = 0,     // min S value
             [32] = 1,     // laser mode ON
-            [100] = 80,   // X steps/mm (B10 factory value)
-            [101] = 80,   // Y steps/mm
-            [110] = 6000, // X max rate mm/min
-            [111] = 6000, // Y max rate mm/min
-            [120] = 1000, // X acceleration mm/s²
-            [121] = 1000, // Y acceleration mm/s²
             [130] = 400,  // X max travel mm
             [131] = 400,  // Y max travel mm
+        },
+        ReferenceSettings = new Dictionary<int, double>
+        {
+            [100] = 80,   // X steps/mm (typical for GT2 belt, 20T pulley, 1/16 microstepping)
+            [101] = 80,   // Y steps/mm
+            [110] = 15000, // X max rate mm/min (B10 rated 250 mm/s)
+            [111] = 15000, // Y max rate mm/min
         },
     };
 

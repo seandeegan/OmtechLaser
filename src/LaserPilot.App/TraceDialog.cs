@@ -21,12 +21,17 @@ public sealed class TraceDialog : Window
 
     public List<Polyline>? Result { get; private set; }
 
+    /// <summary>Size of the (possibly downsampled) image the outlines were traced on, in pixels.</summary>
+    public int TracedWidth => _w;
+    public int TracedHeight => _h;
+
     public TraceDialog(byte[] gray, int pxW, int pxH)
     {
+        Style = (Style)Application.Current.Resources["DarkWindow"];
         Title = "Trace image to vectors";
-        Width = 420; Height = 480;
+        Width = 420;
+        SizeToContent = SizeToContent.Height;
         WindowStartupLocation = WindowStartupLocation.CenterOwner;
-        Background = (Brush)Application.Current.Resources["BgBrush"];
         ResizeMode = ResizeMode.NoResize;
 
         // Downsample large images for speed and manageable geometry.

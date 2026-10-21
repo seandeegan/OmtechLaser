@@ -3,3 +3,6 @@ obj/
 publish/
 *.user
 .vs/
+TestResults/
+# Update token written by CI from a repository secret — never commit it
+src/LaserPilot.App/update.key

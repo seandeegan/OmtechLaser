@@ -17,6 +17,8 @@ public sealed class GrblStatus
     public double WX { get; set; }
     public double WY { get; set; }
     public double WZ { get; set; }
+    /// <summary>True when the report carried MPos ($10=1); otherwise MPos was derived from WPos + WCO.</summary>
+    public bool HasMachinePosition { get; set; }
     public double WcoX { get; set; }
     public double WcoY { get; set; }
     public double WcoZ { get; set; }
@@ -29,18 +31,28 @@ public sealed class GrblStatus
     public double OverrideFeed { get; set; } = 100;
     public double OverrideRapid { get; set; } = 100;
     public double OverrideSpindle { get; set; } = 100;
+    /// <summary>Accessory state: S/C = spindle (laser) enabled, F = flood (air assist), M = mist.</summary>
+    public string Accessories { get; set; } = "";
 
     public bool XLimitActive => Pins.Contains('X');
     public bool YLimitActive => Pins.Contains('Y');
     public bool ZLimitActive => Pins.Contains('Z');
+    /// <summary>Safety door input (on many diode lasers this is the flame/tilt sensor).</summary>
+    public bool DoorPinActive => Pins.Contains('D');
+    public bool LaserEnabled => Accessories.Contains('S') || Accessories.Contains('C');
+    public bool AirAssistOn => Accessories.Contains('F') || Accessories.Contains('M');
 
     public static bool TryParse(string line, GrblStatus? previous, out GrblStatus status)
     {
         status = new GrblStatus();
         if (previous is not null)
         {
-            // WCO is only reported intermittently; carry it forward.
+            // WCO, overrides and accessory state are only reported intermittently; carry them forward.
             status.WcoX = previous.WcoX; status.WcoY = previous.WcoY; status.WcoZ = previous.WcoZ;
+            status.OverrideFeed = previous.OverrideFeed;
+            status.OverrideRapid = previous.OverrideRapid;
+            status.OverrideSpindle = previous.OverrideSpindle;
+            status.Accessories = previous.Accessories;
             status.Pins = ""; // pins are only present while active
         }
 
@@ -66,7 +78,7 @@ public sealed class GrblStatus
             _ => MachineState.Unknown
         };
 
-        bool haveMPos = false, haveWPos = false;
+        bool haveMPos = false, haveWPos = false, haveAccessories = false, haveOverrides = false;
         foreach (var f in fields.Skip(1))
         {
             var idx = f.IndexOf(':');
@@ -99,11 +111,18 @@ public sealed class GrblStatus
                     break;
                 case "Ov":
                     if (parts.Length >= 3 && Num(parts[0], out var of) && Num(parts[1], out var or) && Num(parts[2], out var os))
-                    { status.OverrideFeed = of; status.OverrideRapid = or; status.OverrideSpindle = os; }
+                    { status.OverrideFeed = of; status.OverrideRapid = or; status.OverrideSpindle = os; haveOverrides = true; }
+                    break;
+                case "A":
+                    status.Accessories = val;
+                    haveAccessories = true;
                     break;
             }
         }
+        // GRBL prints A: in the same reports as Ov:, and only when something is on.
+        if (haveOverrides && !haveAccessories) status.Accessories = "";
 
+        status.HasMachinePosition = haveMPos;
         // Derive whichever position wasn't reported (WPos = MPos - WCO).
         if (haveMPos && !haveWPos)
         {

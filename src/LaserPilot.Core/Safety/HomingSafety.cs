@@ -21,8 +21,12 @@ public sealed class HomingSafetyService
 
     public HomingSafetyService(GrblController grbl) => _grbl = grbl;
 
+    /// <summary>The $23 value matching where this machine's switches are (user choice wins over the profile).</summary>
+    public static double ExpectedHomingDirection(MachineProfile profile, int? userDirectionMask) =>
+        userDirectionMask ?? (profile.RecommendedSettings.TryGetValue(23, out var rd) ? rd : double.NaN);
+
     /// <summary>Run configuration checks before allowing $H.</summary>
-    public async Task<List<HomingCheck>> DiagnoseAsync(MachineProfile profile)
+    public async Task<List<HomingCheck>> DiagnoseAsync(MachineProfile profile, int? userDirectionMask = null)
     {
         var checks = new List<HomingCheck>();
 
@@ -58,17 +62,23 @@ public sealed class HomingSafetyService
 
         // Homing direction
         var dir = Get(23);
-        var recommendedDir = profile.RecommendedSettings.TryGetValue(23, out var rd) ? rd : double.NaN;
-        if (!double.IsNaN(recommendedDir) && dir != recommendedDir)
+        var recommendedDir = ExpectedHomingDirection(profile, userDirectionMask);
+        var corner = DescribeHomingCorner(recommendedDir, profile.Origin);
+        if (double.IsNaN(dir))
         {
             checks.Add(new(CheckResult.Fail, "Homing direction ($23)",
-                $"Current value is {dir:0}, but this machine's switches are at the {DescribeCorner(profile.Origin)} — expected $23={recommendedDir:0}. " +
+                "The controller did not report $23, so the homing direction can't be verified. Re-read the settings or run the Setup Wizard."));
+        }
+        else if (!double.IsNaN(recommendedDir) && dir != recommendedDir)
+        {
+            checks.Add(new(CheckResult.Fail, "Homing direction ($23)",
+                $"Current value is {dir:0}, but this machine's switches are at the {corner} — expected $23={recommendedDir:0}. " +
                 "With the wrong direction the head drives AWAY from the switches and bangs into the opposite rail. Fix this before homing."));
         }
         else
         {
             checks.Add(new(CheckResult.Pass, "Homing direction ($23)",
-                $"$23={dir:0} — homing toward the {DescribeCorner(profile.Origin)} corner where the switches are."));
+                $"$23={dir:0} — homing toward the {corner} corner where the switches are."));
         }
 
         // Travel sizes drive the homing search distance (1.5× max travel).
@@ -163,7 +173,12 @@ public sealed class HomingSafetyService
                     "Run the limit switch test in the Setup Wizard.");
             }
             var r = await homeTask.ConfigureAwait(false);
-            if (r.Ok) return new(true, "Homing completed successfully. Machine position is now known.");
+            if (r.Ok)
+            {
+                var origin = await EnsureBedOriginAsync(profile).ConfigureAwait(false);
+                return new(true, "Homing completed successfully. Machine position is now known." +
+                                 (origin.Length > 0 ? "\n\n" + origin : ""));
+            }
 
             if (alarmCode != 0)
                 return new(false, HomingFailureAdvice(alarmCode), alarmCode);
@@ -173,6 +188,69 @@ public sealed class HomingSafetyService
         {
             _grbl.AlarmRaised -= OnAlarm;
         }
+    }
+
+    /// <summary>
+    /// The G54 offset for one axis that puts work 0 at the bed's minimum edge
+    /// (front / left), given where homing left the machine. Stock GRBL uses an
+    /// all-negative machine space [−travel, 0]. Builds with
+    /// HOMING_FORCE_SET_ORIGIN call the home position 0 instead, which gives
+    /// [0, +travel] when homing toward the minimum end.
+    /// </summary>
+    public static double BedOffsetForAxis(bool homesTowardMinimum, double machinePosAfterHoming, double travel)
+    {
+        if (homesTowardMinimum && machinePosAfterHoming > -travel / 2) return 0; // force-origin build
+        return -travel;
+    }
+
+    /// <summary>
+    /// After homing, make work (0,0) the bed's front-left corner so designs on
+    /// the screen land in the same place on the bed. Writes G54 only when it
+    /// is wrong (it lives in EEPROM). Returns a message when something changed.
+    /// </summary>
+    public async Task<string> EnsureBedOriginAsync(MachineProfile profile)
+    {
+        if (!_grbl.IsConnected || !profile.HasLimitSwitches) return "";
+        _grbl.QueryStatus();
+        await Task.Delay(350).ConfigureAwait(false);
+        if (!await _grbl.RefreshOffsetsAsync().ConfigureAwait(false)) return "";
+        var g54 = _grbl.GetOffset("G54");
+        var g92 = _grbl.GetOffset("G92") ?? new double[] { 0, 0, 0 };
+        if (g54 is null || g54.Length < 2 || g92.Length < 2) return "";
+
+        // Without the real homing direction and travel, a "fix" could move the origin off the bed.
+        if (_grbl.GetSetting(23) is not { } dirSetting || _grbl.GetSetting(130) is not { } travelX ||
+            _grbl.GetSetting(131) is not { } travelY || travelX <= 0 || travelY <= 0)
+            return "";
+        var st = _grbl.Status;
+        double mx = st.HasMachinePosition ? st.MX : st.WX + g54[0] + g92[0];
+        double my = st.HasMachinePosition ? st.MY : st.WY + g54[1] + g92[1];
+        int dir = (int)dirSetting;
+        double wantX = BedOffsetForAxis((dir & 1) != 0, mx, travelX);
+        double wantY = BedOffsetForAxis((dir & 2) != 0, my, travelY);
+
+        var changes = new List<string>();
+        if (Math.Abs(g92[0]) > 1e-6 || Math.Abs(g92[1]) > 1e-6)
+        {
+            // G92 offsets are temporary and would shift every job; clear them.
+            if ((await _grbl.SendAsync("G92.1").ConfigureAwait(false)).Ok) changes.Add("cleared a temporary G92 offset");
+        }
+        if (Math.Abs(g54[0] - wantX) > 0.01 || Math.Abs(g54[1] - wantY) > 0.01)
+        {
+            var cmd = string.Create(System.Globalization.CultureInfo.InvariantCulture, $"G10 L2 P1 X{wantX:0.###} Y{wantY:0.###}");
+            if ((await _grbl.SendAsync(cmd).ConfigureAwait(false)).Ok)
+                changes.Add($"set the work origin (G54) to the bed's front-left corner: X{wantX:0.###} Y{wantY:0.###}");
+        }
+        return changes.Count == 0 ? "" : "LaserPilot " + string.Join(" and ", changes) + ".";
+    }
+
+    public static string DescribeHomingCorner(double dirMask, OriginCorner fallback)
+    {
+        if (double.IsNaN(dirMask)) return DescribeCorner(fallback);
+        int m = (int)dirMask;
+        var x = (m & 1) != 0 ? "left" : "right";
+        var y = (m & 2) != 0 ? "front" : "rear";
+        return $"{y}-{x}";
     }
 
     public static string HomingFailureAdvice(int alarmCode) => alarmCode switch

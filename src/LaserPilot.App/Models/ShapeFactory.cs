@@ -54,7 +54,7 @@ public static class ShapeFactory
             FontStretches.Normal);
 
         var ft = new FormattedText(text, CultureInfo.CurrentCulture, FlowDirection.LeftToRight,
-            typeface, 100, Brushes.Black, 96);
+            typeface, 100, Brushes.Black, 1.0);
         var geo = ft.BuildGeometry(new Point(0, 0));
         var flat = geo.GetFlattenedPathGeometry(0.15, ToleranceType.Absolute);
 
@@ -83,8 +83,26 @@ public static class ShapeFactory
         var k = heightMm / item.H;
         item.W *= k;
         item.H = heightMm;
+        // Text is almost always engraved solid: start in Fill mode with engraving settings.
+        item.Mode = LaserPilot.Core.Gcode.VectorMode.Fill;
+        item.Cut.SpeedMmMin = 3000;
+        item.Cut.PowerPercent = 40;
         return item;
     }
 
-    private static string Truncate(string s) => s.Length <= 18 ? s : s[..18] + "…";
+    private static string Truncate(string s)
+    {
+        s = s.Replace("\r", "").Replace('\n', ' ');
+        return s.Length <= 18 ? s : s[..18] + "…";
+    }
+
+    /// <summary>A rectangle with exact settings (used by the material test generator).</summary>
+    public static DesignItem Box(string name, double x, double y, double w, double h)
+    {
+        var item = Rect(w, h);
+        item.Name = name;
+        item.X = x;
+        item.Y = y;
+        return item;
+    }
 }
