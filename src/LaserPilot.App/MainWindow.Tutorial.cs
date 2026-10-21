@@ -176,7 +176,8 @@ public partial class MainWindow
                 Title = "Home the laser",
                 Body = "Homing sends the head to its home corner until it touches two small switches, so it knows exactly where it is. " +
                        "Do this every time you switch the laser on.\n\n" +
-                       "LaserPilot checks the settings first and stops the machine automatically if homing takes longer than it should.",
+                       "The very first time, LaserPilot has you test the two switches by hand (nothing moves), and the first homing runs slowly.\n\n" +
+                       "Watch the head: if it reaches the end of a rail and keeps pushing with a grinding noise, press ⛔ STOP.",
                 TryIt = "Try it: click 🏠 Home (safe) once the laser is connected.",
                 IsDone = () => _homedThisSession,
                 DoneText = "✓ Homed — the laser knows where it is. Click Next.",

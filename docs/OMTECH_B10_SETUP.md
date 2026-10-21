@@ -5,7 +5,7 @@ This is the full, annotated version of what the in-app Setup Wizard does, plus m
 ## 1. Physical setup
 
 - Assemble per OMTech's manual; make sure both belts are tensioned and the gantry moves freely by hand when switched off.
-- The **limit switches** live at the **front-left**: one on the X carriage arm, one on the frame's Y rail. Check both plugs are seated on the control board.
+- Find the **limit switches**: one on the X (gantry) arm, one on a Y (side) rail. LaserPilot's B10 profile expects them at the **front-left**, but check your own machine — the Setup Wizard asks which corner they're in. Make sure both plugs are seated on the control board. No switches at all? Then the laser can't home; use 📍 Set origin instead.
 - Focus: use the focusing tool (the small spacer) between the laser and the material — rest the laser on it, tighten the knob, remove the tool.
 - The B10 has a **flame sensor** under the crossbeam and **built-in air assist**. Keep the air running for cutting — it gives cleaner edges and fewer flare-ups.
 
@@ -23,7 +23,7 @@ The wizard checks these and offers to fix mismatches; here's what they mean:
 | Setting | Value | Why |
 |---|---|---|
 | `$130` / `$131` | 400 / 400 | Work area (mm). Homing search distance is 1.5× this — wrong values make homing search too far or give up early. |
-| `$23` | **3** | Homing direction: X− Y− = front-left, where the B10's switches are. **The #1 cause of rail-crashing on this machine is `$23=0` (GRBL default), which homes toward the BACK-RIGHT — away from the switches.** |
+| `$23` | **3** | Homing direction: X− Y− = front-left. It must match the corner your switches are in (3 front-left, 1 rear-left, 2 front-right, 0 rear-right) — homing toward a corner without switches drives the head into the frame. GRBL's default `$23=0` homes toward the back-right. |
 | `$22` | 1 | Enable homing (only after the switches are verified!) |
 | `$24` / `$25` | 100 / 1500 | Homing locate/seek speeds — deliberately gentle. |
 | `$27` | 2.0 | Pull-off after touching a switch. |
@@ -39,12 +39,12 @@ The wizard checks these and offers to fix mismatches; here's what they mean:
 
 Never enable homing before its prerequisites are proven. The wizard enforces this order:
 
-1. **Where are the switches?** Front-left on the B10 (`$23=3`); rear-left machines use `$23=1`.
-2. **Limit switch test (no motion).** Press each switch by hand while LaserPilot watches the controller's live pin report (`Pn:` field). Both must register.
+1. **Where are the switches?** Pick the corner you actually see them in (front-left, rear-left, front-right or rear-right); LaserPilot sets `$23` to match.
+2. **Limit switch test (no motion).** Press each switch by hand while LaserPilot watches the controller's live pin report (`Pn:` field). Both must register. **🏠 Home stays locked until this test has passed once.**
    - If hard limits (`$21=1`) are on, pressing a switch would trigger an alarm that freezes the controller, so the wizard pauses hard limits during the test and switches them back on afterwards.
-   - A switch that shows as *always* pressed is wired normally-closed → set `$5=1` and test again.
+   - A switch that shows as *always* pressed is wired normally-closed → set `$5=1` and test again. (It doesn't count as a pass.)
 3. **Direction test (10 mm moves).** X+ must go right, Y+ must go toward the back. A backwards motor is fixed by flipping one bit of `$3`. If soft limits block these moves (the position isn't known before homing), the wizard offers to pause them for the test.
-4. **Supervised homing.** LaserPilot works out the longest a correct cycle can take from your own settings and stops the controller if it's exceeded — a wrong direction can't grind for long.
+4. **Supervised homing.** The first homing runs at a gentle 600 mm/min (your `$25` is put back afterwards). LaserPilot works out the longest a correct cycle can take from your own settings and stops the controller if it's exceeded. GRBL can't report anything while it homes, so this limit is only a little shorter than GRBL's own give-up point: **watch the first homing and press ⛔ STOP if the head reaches a rail end and keeps pushing.** The switch test is what really prevents grinding.
 5. **Turn on `$20`/`$21`.** From now on the firmware itself refuses motion outside 400×400 mm.
 
 ## 5. Where is (0,0)?

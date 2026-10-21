@@ -378,10 +378,12 @@ public partial class MainWindow
         RedrawCanvas();
     }
 
-    private void Wizard_Click(object sender, RoutedEventArgs e)
+    private void Wizard_Click(object sender, RoutedEventArgs e) => OpenWizard();
+
+    private void OpenWizard(int startStep = 0)
     {
         if (_grbl.IsJobRunning) { Info("Wait for the job to finish (or stop it) before running the Setup Wizard."); return; }
-        var wiz = new SetupWizardWindow(_grbl, _profile, _settings) { Owner = this };
+        var wiz = new SetupWizardWindow(_grbl, _profile, _settings, startStep) { Owner = this };
         _wizardOpen = true;
         try { wiz.ShowDialog(); }
         finally { _wizardOpen = false; }
@@ -441,6 +443,16 @@ public partial class MainWindow
             Info("This machine profile has no limit switches, so it can't home.\n\nMove the laser to the front-left corner of your work area with the arrows, then press 📍 Set origin.");
             return;
         }
+        if (!_settings.LimitSwitchesVerified)
+        {
+            // Homing with a switch that doesn't register drives the head into the frame until GRBL gives up.
+            if (Ask("Before the first homing, LaserPilot needs to check that both limit switches work — otherwise the head could " +
+                    "drive into the end of the rails and keep pushing.\n\n" +
+                    "It takes about a minute and nothing moves: you tell LaserPilot which corner the switches are in, then press each one by hand.\n\n" +
+                    "Open the switch test now?", "Test the limit switches first", MessageBoxImage.Warning) == MessageBoxResult.Yes)
+                OpenWizard(SetupWizardWindow.SwitchTestStep);
+            return;
+        }
 
         _homeBusy = true;
         HomeBtn.IsEnabled = false;
@@ -458,9 +470,12 @@ public partial class MainWindow
                 return;
             }
             var dir = HomingSafetyService.ExpectedHomingDirection(_profile, _settings.HomingDirectionMask);
+            bool firstHoming = !_settings.HomingProven;
             var msg = $"Ready to home. The head will move toward the {HomingSafetyService.DescribeHomingCorner(dir, _profile.Origin).ToUpperInvariant()} " +
-                      "corner until it touches the limit switches.\n\n" +
-                      "LaserPilot watches the cycle and stops the machine automatically if it takes longer than it physically should.\n";
+                      "corner until it touches the limit switches, then backs off a little and stops.\n\n" +
+                      (firstHoming ? "This is the first homing, so it runs at a gentle speed.\n\n" : "") +
+                      "WATCH THE HEAD: if it reaches the corner and keeps pushing (a grinding or knocking noise), press ⛔ STOP straight away. " +
+                      "LaserPilot also stops it automatically if it takes longer than a correct homing can.\n";
             if (warnings.Count > 0)
                 msg += "\nWarnings:\n" + string.Join("\n", warnings.Select(w => $"⚠ {w.Title}: {w.Detail}"));
             msg += "\n\nStart homing?";
@@ -471,10 +486,15 @@ public partial class MainWindow
             if (_grbl.Status.State == MachineState.Idle) await _grbl.SendAsync("M5");
 
             _homingInProgress = true;
-            var result = await _safety.SafeHomeAsync(_profile);
+            var result = await _safety.SafeHomeAsync(_profile, firstHoming ? HomingSafetyService.GentleSeekMmMin : null);
             if (result.Success)
             {
                 _homedThisSession = true;
+                if (firstHoming)
+                {
+                    _settings.HomingProven = true;
+                    _settings.Save();
+                }
                 HideAlert("state");
                 Info(result.Message, "Homing complete");
             }

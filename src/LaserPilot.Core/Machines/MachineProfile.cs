@@ -22,6 +22,10 @@ public sealed class MachineProfile
     /// "set origin manually" flow instead.</summary>
     public bool HasLimitSwitches { get; init; }
 
+    /// <summary>True if the firmware homes X and Y at the same time (diagonally) rather than one
+    /// after the other. Sets how long a correct homing cycle may take.</summary>
+    public bool HomesXYTogether { get; init; }
+
     public double MaxPowerS { get; init; } = 1000;    // $30
     /// <summary>Fastest speed the machine is rated for (mm/min).</summary>
     public double MaxFeedXy { get; init; } = 6000;
@@ -80,6 +84,7 @@ public sealed class MachineProfile
         Baud = 115200,
         Origin = OriginCorner.FrontLeft,
         HasLimitSwitches = true,
+        HomesXYTogether = true, // the head travels diagonally toward the home corner
         MaxPowerS = 1000,
         MaxFeedXy = 15000,
         AccelXy = 1500,

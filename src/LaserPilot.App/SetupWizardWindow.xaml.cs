@@ -18,6 +18,8 @@ namespace LaserPilot.App;
 public partial class SetupWizardWindow : Window
 {
     private const int LastStep = 6;
+    /// <summary>The limit switch test, where the switch corner is chosen too.</summary>
+    public const int SwitchTestStep = 3;
 
     private readonly GrblController _grbl;
     private readonly MachineProfile _profile;
@@ -32,14 +34,15 @@ public partial class SetupWizardWindow : Window
 
     public bool HomedSuccessfully { get; private set; }
 
-    public SetupWizardWindow(GrblController grbl, MachineProfile profile, AppSettings settings)
+    public SetupWizardWindow(GrblController grbl, MachineProfile profile, AppSettings settings, int startStep = 0)
     {
         InitializeComponent();
         _grbl = grbl;
         _profile = profile;
         _settings = settings;
         _safety = new HomingSafetyService(grbl);
-        ShowStep(0);
+        // Later steps need the connection: start at "Connect" if there isn't one.
+        ShowStep(startStep > 1 && !grbl.IsConnected ? 1 : Math.Clamp(startStep, 0, LastStep));
         Closing += async (_, _) =>
         {
             _testCts?.Cancel();
@@ -267,14 +270,38 @@ public partial class SetupWizardWindow : Window
         var pinLine = StatusLine("Live switch state: (not running)");
         var result = StatusLine();
 
-        sp.Children.Add(Para("Where are the limit switches on your machine? Look for two small switches with wires, in the corner where the head parks. " +
-                             "On the OMTech B10 they're at the FRONT-LEFT (the corner nearest you, on the left)."));
-        var frontLeft = new RadioButton { Content = "Front-left (OMTech B10 standard)", GroupName = "corner", IsChecked = HomingDirection != 1 };
-        var rearLeft = new RadioButton { Content = "Rear-left (some other machines)", GroupName = "corner", IsChecked = HomingDirection == 1 };
-        frontLeft.Checked += (_, _) => { _settings.HomingDirectionMask = 3; _settings.Save(); };
-        rearLeft.Checked += (_, _) => { _settings.HomingDirectionMask = 1; _settings.Save(); };
-        sp.Children.Add(frontLeft);
-        sp.Children.Add(rearLeft);
+        sp.Children.Add(Para("Where are the limit switches on your machine? Switch the laser off and look at the ends of the two rails for small " +
+                             "switches with wires (often a tiny lever that clicks). The X switch (on the gantry arm) is on the left or the right; " +
+                             "the Y switch (on a side rail) is at the front or the back. Together they give the corner the head homes to.\n\n" +
+                             "LaserPilot's B10 profile expects the FRONT-LEFT, but go by what you see on your machine."));
+        var cornerLog = StatusLine();
+        var corners = new (string Label, int Mask)[]
+        {
+            ("Front-left — nearest you, on the left (B10 default)", 3),
+            ("Rear-left — at the back, on the left", 1),
+            ("Front-right — nearest you, on the right", 2),
+            ("Rear-right — at the back, on the right", 0),
+        };
+        foreach (var (label, mask) in corners)
+        {
+            var rb = new RadioButton { Content = label, GroupName = "corner", IsChecked = HomingDirection == mask, Margin = new Thickness(0, 2, 0, 2) };
+            rb.Checked += async (_, _) =>
+            {
+                if (_settings.HomingDirectionMask != mask) _settings.HomingProven = false; // new direction: first homing is gentle again
+                _settings.HomingDirectionMask = mask;
+                _settings.Save();
+                // Point homing at that corner straight away ($23 is only a setting; nothing moves).
+                if (_grbl.IsConnected && !_grbl.IsJobRunning && _grbl.GetSetting(23) != mask)
+                {
+                    var w = await _grbl.WriteSettingAsync(23, mask);
+                    cornerLog.Text = w.Ok ? $"Homing direction set: $23={mask}" : $"Couldn't set $23: {w.ErrorText}";
+                }
+            };
+            sp.Children.Add(rb);
+        }
+        sp.Children.Add(cornerLog);
+        sp.Children.Add(Para("Can't find any switches? Then this laser can't home — don't use 🏠 Home. Instead move the head to the front-left " +
+                             "corner with the arrows and press 📍 Set origin (and set $22 to 0 in GRBL Settings so homing stays off).", 12.5));
 
         var start = new Button { Content = "▶ Start the 30-second test", Style = (Style)FindResource("AccentButton"), HorizontalAlignment = HorizontalAlignment.Left, Margin = new Thickness(0, 10, 0, 0) };
         start.Click += async (_, _) =>
@@ -305,15 +332,21 @@ public partial class SetupWizardWindow : Window
             _testCts = new CancellationTokenSource();
             try
             {
-                var (x, y) = await _safety.LimitSwitchTestAsync(TimeSpan.FromSeconds(30),
+                var t = await _safety.LimitSwitchTestAsync(TimeSpan.FromSeconds(30),
                     pins => Dispatcher.BeginInvoke(() => pinLine.Text = $"Live switch state: {(pins.Length == 0 ? "(none pressed)" : pins)}"),
                     _testCts.Token);
-                result.Text += $"X switch: {(x ? "✔ detected" : "✖ NOT detected")}\nY switch: {(y ? "✔ detected" : "✖ NOT detected")}";
-                result.Text += x && y
-                    ? "\n\nGreat — both switches work. Homing will be able to find them."
-                    : "\n\nA switch wasn't seen. Check its plug on the control board and the wiring along the rail. " +
-                      "Don't enable homing until both switches respond. (If a switch shows as ALWAYS pressed instead, it's wired " +
-                      "normally-closed — set $5=1 in GRBL Settings and test again.)";
+                static string Line(string axis, bool seen, bool stuck) =>
+                    stuck ? $"{axis} switch: ⚠ reads PRESSED the whole time" : $"{axis} switch: {(seen ? "✔ detected" : "✖ NOT detected")}";
+                result.Text += Line("X", t.XSeen, t.XStuck) + "\n" + Line("Y", t.YSeen, t.YStuck);
+                _settings.LimitSwitchesVerified = t.BothWork;
+                _settings.Save();
+                result.Text += t.BothWork
+                    ? "\n\nGreat — both switches work. Homing is unlocked."
+                    : t.XStuck || t.YStuck
+                        ? "\n\nA switch that reads pressed all the time is usually wired 'normally closed': in GRBL Settings set $5 to 1, " +
+                          "then run this test again. (If the head is really resting on that switch, move it away first.) Homing stays locked until both switches pass."
+                        : "\n\nA switch wasn't seen. Check its plug on the control board and the wiring along the rail, then test again. " +
+                          "Homing stays locked until both switches respond.";
             }
             catch (OperationCanceledException) { result.Text += "Test cancelled."; }
             finally
@@ -329,7 +362,9 @@ public partial class SetupWizardWindow : Window
             }
         };
 
-        sp.Children.Add(Para("With the machine switched ON but standing still, you'll press each limit switch by hand while LaserPilot watches the controller's inputs."));
+        sp.Children.Add(Para("With the machine switched ON but standing still, you'll press each limit switch by hand while LaserPilot watches the controller's inputs. " +
+                             "The head must not be touching a switch: if it's sitting in a corner, switch the laser off, slide the head to the middle by hand, " +
+                             "switch it back on and reconnect."));
         sp.Children.Add(Para("1. Press ▶ Start below.\n2. Gently click the X limit switch (on the moving gantry arm) with your finger.\n3. Then click the Y limit switch (on the frame).\n\n" +
                              "Each press should appear in the live line below within a moment."));
         sp.Children.Add(start);
@@ -414,9 +449,10 @@ public partial class SetupWizardWindow : Window
         var log = StatusLine();
         var corner = HomingSafetyService.DescribeHomingCorner(HomingDirection, _profile.Origin).ToUpperInvariant();
         sp.Children.Add(Para("Now the real thing — supervised. LaserPilot works out the longest a correct homing cycle can take from your machine's own settings. " +
-                             "If it runs longer (the head is lost or grinding), it's stopped automatically."));
+                             "If it runs longer (the head is lost or grinding), it's stopped automatically. The first homing runs at a gentle speed."));
         sp.Children.Add(Para($"What you should see: the head moves toward the {corner} corner, touches both switches, backs off about 2 mm and stops. " +
                              "That corner becomes the start of the bed."));
+        sp.Children.Add(Para("⚠ If the head reaches the end of a rail and keeps pushing (grinding or knocking), press ⛔ STOP straight away."));
 
         var enable = new Button { Content = "1️⃣ Enable homing in the controller ($22=1, direction, speeds)", HorizontalAlignment = HorizontalAlignment.Left };
         enable.Click += async (_, _) =>
@@ -436,6 +472,11 @@ public partial class SetupWizardWindow : Window
         home.Click += async (_, _) =>
         {
             if (!_grbl.IsConnected) { log.Text = "Not connected."; return; }
+            if (!_settings.LimitSwitchesVerified)
+            {
+                log.Text = "Homing is locked until both limit switches pass the test in step 3. Press ◀ Back twice to get there.";
+                return;
+            }
             var checks = await _safety.DiagnoseAsync(_profile, HomingDirection);
             var fails = checks.Where(c => c.Result == CheckResult.Fail).ToList();
             if (fails.Count > 0)
@@ -447,12 +488,14 @@ public partial class SetupWizardWindow : Window
                 "Supervised homing", MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes) return;
             home.IsEnabled = false;
             log.Text = "Homing… watch the machine.";
-            var result = await _safety.SafeHomeAsync(_profile);
+            var result = await _safety.SafeHomeAsync(_profile, _settings.HomingProven ? null : HomingSafetyService.GentleSeekMmMin);
             log.Text = result.Message;
             home.IsEnabled = true;
             if (!result.Success) return;
 
             HomedSuccessfully = true;
+            _settings.HomingProven = true;
+            _settings.Save();
             if (MessageBox.Show(this,
                     "Homing works! 🎉\n\nLast safety step: switch on the soft limits ($20=1) and hard limits ($21=1), so the machine " +
                     "physically can't be driven outside its work area from now on.\n\nSwitch them on?",

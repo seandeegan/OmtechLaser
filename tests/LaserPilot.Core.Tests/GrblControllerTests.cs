@@ -312,6 +312,73 @@ public sealed class GrblControllerTests
     }
 
     [TestMethod]
+    public async Task FirstHoming_RunsGently_ThenRestoresTheSeekSpeed()
+    {
+        var (grbl, fake) = Connect();
+        using var _g = grbl;
+        await grbl.RefreshSettingsAsync();
+        fake.Settings[25] = 1500;
+        await grbl.RefreshSettingsAsync();
+        var result = await new HomingSafetyService(grbl).SafeHomeAsync(MachineProfile.OmtechB10, HomingSafetyService.GentleSeekMmMin);
+        Assert.IsTrue(result.Success, result.Message);
+        var lines = fake.ReceivedLines.ToList();
+        int gentle = lines.IndexOf("$25=600"), home = lines.IndexOf("$H"), restore = lines.IndexOf("$25=1500");
+        Assert.IsTrue(gentle >= 0 && gentle < home && home < restore, string.Join(" | ", lines));
+        Assert.AreEqual(1500, fake.Settings[25]);
+    }
+
+    [TestMethod]
+    public void HomingBudget_IsTheLongestACorrectCycleCanTake()
+    {
+        // B10: 400 mm, seek 1500, locate 100, pull-off 2 mm, debounce 250 ms, X and Y together.
+        var b10 = HomingSafetyService.HomingTimeBudget(400, 1500, 100, 2, 250, xyTogether: true).TotalSeconds;
+        Assert.AreEqual(22, b10, 1, "seek 16.4 s + locate 2.4 s + pull-offs + debounce + round trip");
+        // GRBL itself only gives up after searching 1.5 × 400 mm = 24 s: the budget stops sooner.
+        Assert.IsTrue(b10 < 1.5 * 400 / 1500 * 60);
+        // Gentle first homing: well inside GRBL's own 60 s.
+        var gentle = HomingSafetyService.HomingTimeBudget(400, 600, 100, 2, 250, xyTogether: true).TotalSeconds;
+        Assert.IsTrue(gentle > 41 && gentle < 50, gentle.ToString());
+        // One axis after the other takes about twice as long.
+        var sequential = HomingSafetyService.HomingTimeBudget(400, 1500, 100, 2, 250, xyTogether: false).TotalSeconds;
+        Assert.AreEqual(2 * (b10 - 2) + 2, sequential, 0.01);
+    }
+
+    [TestMethod]
+    public async Task SwitchTest_NeedsARealPress_NotAStuckInput()
+    {
+        var (grbl, fake) = Connect();
+        using var _g = grbl;
+        var safety = new HomingSafetyService(grbl);
+
+        // Normally-closed switches read with $5=0: "pressed" all the time.
+        fake.Pins = "XY";
+        var stuck = await safety.LimitSwitchTestAsync(TimeSpan.FromSeconds(1));
+        Assert.IsFalse(stuck.BothWork);
+        Assert.IsTrue(stuck.XStuck && stuck.YStuck);
+
+        // Released, then each switch pressed in turn.
+        fake.Pins = "";
+        var presses = Task.Run(async () =>
+        {
+            await Task.Delay(400); fake.Pins = "X";
+            await Task.Delay(400); fake.Pins = "";
+            await Task.Delay(400); fake.Pins = "Y";
+        });
+        var good = await safety.LimitSwitchTestAsync(TimeSpan.FromSeconds(5));
+        await presses;
+        Assert.IsTrue(good.BothWork, good.ToString());
+
+        // A switch that never registers.
+        fake.Pins = "";
+        var missing = Task.Run(async () => { await Task.Delay(300); fake.Pins = "X"; });
+        var oneOnly = await safety.LimitSwitchTestAsync(TimeSpan.FromSeconds(1.5));
+        await missing;
+        Assert.IsTrue(oneOnly.XSeen);
+        Assert.IsFalse(oneOnly.YSeen);
+        Assert.IsFalse(oneOnly.BothWork);
+    }
+
+    [TestMethod]
     public void BedOffset_CoversBothGrblConventions()
     {
         // Stock GRBL, homing toward X-/Y- (B10): home ≈ -travel + pull-off.

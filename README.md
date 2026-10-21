@@ -57,9 +57,9 @@ Because the repository is **private**, GitHub only shares releases with a read-o
 1. Plug in USB, switch the laser on, start LaserPilot.
 2. The welcome screen offers the **guided tour** and the **Setup Wizard** — do both if you're new. The wizard:
    - connects and compares your controller's GRBL settings with safe B10 values (400×400 mm work area, laser mode, homing toward the **front-left** switches with `$23=3`),
-   - has you press each limit switch by hand and confirms the controller sees them,
+   - asks which corner your limit switches are in, has you press each one by hand and confirms the controller sees them (🏠 Home stays locked until this passes),
    - makes single 10 mm test moves to verify motor direction (and fixes `$3` if reversed),
-   - runs the first homing cycle supervised, then enables soft + hard limits.
+   - runs the first homing cycle supervised and at a gentle speed, then enables soft + hard limits.
 3. After that: **Home → Import → position → Frame → Start.**
 
 See [docs/OMTECH_B10_SETUP.md](docs/OMTECH_B10_SETUP.md) for the full walkthrough and

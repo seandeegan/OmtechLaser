@@ -42,6 +42,13 @@ public partial class MainWindow
             case "!": _grbl.FeedHold(); return;
             case "~": _grbl.CycleResume(); return;
         }
+        // A raw $H would skip the switch check, the gentle first run and the time limit.
+        if (cmd.StartsWith("$H", StringComparison.OrdinalIgnoreCase))
+        {
+            AppendConsole(new LogEntry { Direction = LogDirection.Info, Text = "$H goes through 🏠 Home, so it runs supervised." });
+            Home_Click(this, new RoutedEventArgs());
+            return;
+        }
         var r = await _grbl.SendAsync(cmd);
         if (!r.Ok && r.ErrorCode == -1)
             AppendConsole(new LogEntry { Direction = LogDirection.Error, Text = r.ErrorText });

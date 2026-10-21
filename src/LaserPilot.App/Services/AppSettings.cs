@@ -28,8 +28,12 @@ public sealed class AppSettings
     public string? LastPort { get; set; }
     public string ProfileId { get; set; } = "omtech-light-b10";
     public bool SetupDone { get; set; }
-    /// <summary>$23 confirmed in the Setup Wizard (3 = front-left switches, 1 = rear-left). Null = profile default.</summary>
+    /// <summary>$23 for the corner the user said the switches are in (3 front-left, 1 rear-left, 2 front-right, 0 rear-right). Null = profile default.</summary>
     public int? HomingDirectionMask { get; set; }
+    /// <summary>Both limit switches registered when pressed by hand (Setup Wizard). Homing is blocked until then.</summary>
+    public bool LimitSwitchesVerified { get; set; }
+    /// <summary>A homing cycle has completed successfully. Until then homing runs at a gentle speed.</summary>
+    public bool HomingProven { get; set; }
 
     // First run & tutorial
     public bool WelcomeShown { get; set; }

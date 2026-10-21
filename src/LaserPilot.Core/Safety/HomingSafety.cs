@@ -9,6 +9,12 @@ public sealed record HomingCheck(CheckResult Result, string Title, string Detail
 
 public sealed record SafeHomeResult(bool Success, string Message, int AlarmCode = 0);
 
+/// <summary>Outcome of pressing the switches by hand. "Stuck" = reported as pressed the whole time.</summary>
+public sealed record LimitTestResult(bool XSeen, bool YSeen, bool XStuck, bool YStuck)
+{
+    public bool BothWork => XSeen && YSeen && !XStuck && !YStuck;
+}
+
 /// <summary>
 /// Pre-flight diagnostics and a supervised homing cycle. The goal: never let
 /// the machine grind into its rails. We check configuration before homing,
@@ -17,6 +23,9 @@ public sealed record SafeHomeResult(bool Success, string Message, int AlarmCode 
 /// </summary>
 public sealed class HomingSafetyService
 {
+    /// <summary>Seek speed (mm/min) for a machine's first, unproven homing: a missed switch bumps gently.</summary>
+    public const double GentleSeekMmMin = 600;
+
     private readonly GrblController _grbl;
 
     public HomingSafetyService(GrblController grbl) => _grbl = grbl;
@@ -111,51 +120,88 @@ public sealed class HomingSafetyService
     }
 
     /// <summary>
-    /// Watch limit pins while the user manually presses each switch.
-    /// Returns which axes were seen triggering within the time window.
+    /// Watch limit pins while the user manually presses each switch. A switch
+    /// only counts once it has been seen released and then pressed — an input
+    /// that reads "pressed" the whole time (normally-closed wiring with $5=0,
+    /// or a short) is reported as stuck instead of passing the test.
     /// </summary>
-    public async Task<(bool xSeen, bool ySeen)> LimitSwitchTestAsync(TimeSpan window, Action<string>? onPinChange = null, CancellationToken ct = default)
+    public async Task<LimitTestResult> LimitSwitchTestAsync(TimeSpan window, Action<string>? onPinChange = null, CancellationToken ct = default)
     {
-        bool x = false, y = false;
-        string lastPins = "";
+        bool x = false, y = false, xReleased = false, yReleased = false, sampled = false;
+        string? lastPins = null;
         var end = DateTime.UtcNow + window;
         while (DateTime.UtcNow < end && !ct.IsCancellationRequested && !(x && y))
         {
             _grbl.QueryStatus();
             await Task.Delay(100, ct).ConfigureAwait(false);
-            var pins = _grbl.Status.Pins;
-            if (pins != lastPins)
+            var st = _grbl.Status;
+            if (st.Pins != lastPins)
             {
-                lastPins = pins;
-                onPinChange?.Invoke(pins);
+                lastPins = st.Pins;
+                onPinChange?.Invoke(st.Pins);
             }
-            if (_grbl.Status.XLimitActive) x = true;
-            if (_grbl.Status.YLimitActive) y = true;
+            sampled = true;
+            if (st.XLimitActive) { if (xReleased) x = true; } else xReleased = true;
+            if (st.YLimitActive) { if (yReleased) y = true; } else yReleased = true;
         }
-        return (x, y);
+        return new LimitTestResult(x, y, XStuck: sampled && !xReleased, YStuck: sampled && !yReleased);
     }
 
     /// <summary>
-    /// Supervised homing: compute the worst-case legitimate cycle time from
-    /// the machine's own settings, run $H, and hard-abort (soft reset) if it
-    /// exceeds the budget — so a wrong direction can't grind for long.
+    /// The longest a CORRECT homing cycle can take, following GRBL 1.1's
+    /// sequence per homing cycle: seek toward the switch (at worst the whole
+    /// axis length), pull off, re-approach slowly, pull off again, with a
+    /// debounce pause after each phase. Axes homed one after the other take
+    /// twice as long as axes homed together.
+    /// Note GRBL itself gives up after searching 1.5× the axis length, so at
+    /// full seek speed this budget is only a little shorter than GRBL's own
+    /// limit; the real protection is testing the switches before homing.
     /// </summary>
-    public async Task<SafeHomeResult> SafeHomeAsync(MachineProfile profile, CancellationToken ct = default)
+    public static TimeSpan HomingTimeBudget(double travelMm, double seekMmMin, double feedMmMin,
+        double pullOffMm, double debounceMs, bool xyTogether)
+    {
+        if (!(seekMmMin > 0)) seekMmMin = 1000;
+        if (!(feedMmMin > 0)) feedMmMin = 100;
+        if (!(pullOffMm >= 0)) pullOffMm = 2;
+        if (!(debounceMs >= 0)) debounceMs = 250;
+        double seek = (travelMm + 10) / seekMmMin * 60;            // from the far end, plus a little slack
+        double locate = (pullOffMm + 2) / feedMmMin * 60;          // back onto the switch slowly (pull-off + switch travel)
+        double pullOffs = 2 * pullOffMm / seekMmMin * 60;
+        double debounce = 4 * debounceMs / 1000;
+        double cycle = seek + locate + pullOffs + debounce;
+        double total = cycle * (xyTogether ? 1 : 2) + 2;           // +2 s for the command round trip
+        return TimeSpan.FromSeconds(Math.Clamp(total, 10, 300));
+    }
+
+    /// <summary>
+    /// Supervised homing: compute the longest a correct cycle can take from
+    /// the machine's own settings, run $H, and hard-abort (soft reset) if it
+    /// takes longer.
+    /// </summary>
+    /// <param name="gentleSeekMmMin">
+    /// For a first, unproven homing: temporarily lower the seek speed ($25) to
+    /// this, so a missed switch bumps gently. The old value is put back afterwards.
+    /// </param>
+    public async Task<SafeHomeResult> SafeHomeAsync(MachineProfile profile, double? gentleSeekMmMin = null, CancellationToken ct = default)
     {
         if (!_grbl.IsConnected) return new(false, "Not connected.");
 
         double travel = Math.Max(_grbl.GetSetting(130) ?? profile.WidthMm,
                                  _grbl.GetSetting(131) ?? profile.HeightMm);
         double seek = _grbl.GetSetting(25) ?? 1000;
-        double feed = _grbl.GetSetting(24) ?? 100;
         if (seek <= 0) seek = 1000;
-        if (feed <= 0) feed = 100;
 
-        // GRBL searches up to 1.5× max travel at seek rate, then locates at
-        // feed rate over the pull-off region, per axis pair. Budget generously
-        // but finitely: search + locate + margin, ×2 axes, +10 s fixed.
-        double seconds = 2 * ((travel * 1.5) / seek * 60 + 10.0 / feed * 60) + 10;
-        var budget = TimeSpan.FromSeconds(Math.Clamp(seconds, 15, 180));
+        double? restoreSeek = null;
+        if (gentleSeekMmMin is { } gentle && gentle > 0 && seek > gentle)
+        {
+            if (!(await _grbl.WriteSettingAsync(25, gentle).ConfigureAwait(false)).Ok)
+                return new(false, "Couldn't set the gentle homing speed ($25), so homing was not started. Check the connection and try again.");
+            restoreSeek = seek;
+            seek = gentle;
+        }
+
+        var budget = HomingTimeBudget(travel, seek, _grbl.GetSetting(24) ?? 100, _grbl.GetSetting(27) ?? 2,
+            _grbl.GetSetting(26) ?? 250, profile.HomesXYTogether);
 
         int alarmCode = 0;
         void OnAlarm(int code, string _) => alarmCode = code;
@@ -168,9 +214,9 @@ public sealed class HomingSafetyService
             {
                 _grbl.SoftReset();
                 return new(false,
-                    $"Homing did not complete within the expected {budget.TotalSeconds:0} s, so LaserPilot stopped the machine (soft reset). " +
-                    "This usually means the head was moving in the WRONG direction (check $23) or a limit switch is not being detected. " +
-                    "Run the limit switch test in the Setup Wizard.");
+                    $"Homing took longer than a correct cycle can ({budget.TotalSeconds:0} s), so LaserPilot stopped the machine. " +
+                    "The head almost certainly reached the end of a rail without a limit switch registering.\n\n" +
+                    "Check where your switches really are and run the limit switch test in the Setup Wizard (step 3) before homing again.");
             }
             var r = await homeTask.ConfigureAwait(false);
             if (r.Ok)
@@ -187,6 +233,17 @@ public sealed class HomingSafetyService
         finally
         {
             _grbl.AlarmRaised -= OnAlarm;
+            if (restoreSeek is { } normal) await RestoreSettingAsync(25, normal).ConfigureAwait(false);
+        }
+    }
+
+    // After a reset GRBL restarts and drops commands for a moment: retry a few times.
+    private async Task RestoreSettingAsync(int setting, double value)
+    {
+        for (int attempt = 0; attempt < 5 && _grbl.IsConnected; attempt++)
+        {
+            if ((await _grbl.WriteSettingAsync(setting, value).ConfigureAwait(false)).Ok) return;
+            await Task.Delay(750).ConfigureAwait(false);
         }
     }
 
@@ -258,8 +315,8 @@ public sealed class HomingSafetyService
         6 => "Homing was cancelled/reset before completing (ALARM 6). If you pressed stop, that's expected. Otherwise check the USB connection.",
         8 => "The head could not pull off the limit switch after triggering it (ALARM 8). Increase the pull-off distance ($27, try 2–3 mm) and check the switch isn't sticking.",
         9 => "GRBL could not find a limit switch within the search distance (ALARM 9). Most likely causes, in order:\n" +
-             "  1. Homing direction ($23) is wrong — the head moved AWAY from the switches. For the OMTech B10 use $23=3 (front-left).\n" +
-             "  2. A limit switch is unplugged or faulty — run the limit switch test.\n" +
+             "  1. The head homed toward a corner without switches — the homing direction ($23) must match the corner your switches are in. Set it in the Setup Wizard, step 3.\n" +
+             "  2. A limit switch is unplugged or faulty — run the limit switch test (Setup Wizard, step 3).\n" +
              "  3. Max travel ($130/$131) is set far too small, so the search gives up early.",
         7 => "The safety door input opened during homing (ALARM 7). Check the door switch / lid sensor wiring.",
         _ => $"Homing failed with ALARM {alarmCode}: {GrblCodes.AlarmText(alarmCode)}",

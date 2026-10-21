@@ -50,6 +50,8 @@ internal sealed class FakeGrbl : ISerialTransport
     public int MotionTailMs { get; set; } = 100;
     public bool Grbl09SettingsFormat { get; set; }
     public bool ReportMachinePosition { get; set; } = true;
+    /// <summary>Input pins reported as active (e.g. "X", "XY"), as in GRBL's Pn: field.</summary>
+    public string Pins { get; set; } = "";
     /// <summary>Where homing leaves the machine (machine coordinates).</summary>
     public (double X, double Y) HomePosition { get; set; } = (-398, -398);
     public Dictionary<int, double> Settings { get; } = new()
@@ -162,9 +164,10 @@ internal sealed class FakeGrbl : ISerialTransport
                 : DateTime.UtcNow < _busyUntil || _rx.ToString().Contains('\n') ? "Run" : "Idle");
         }
         var inv = CultureInfo.InvariantCulture;
+        var pins = Pins.Length > 0 ? "|Pn:" + Pins : "";
         return ReportMachinePosition
-            ? string.Create(inv, $"<{state}|MPos:{X:0.000},{Y:0.000},0.000|FS:0,0|WCO:{_g54X:0.000},{_g54Y:0.000},0.000>")
-            : string.Create(inv, $"<{state}|WPos:{X - _g54X:0.000},{Y - _g54Y:0.000},0.000|FS:0,0|WCO:{_g54X:0.000},{_g54Y:0.000},0.000>");
+            ? string.Create(inv, $"<{state}|MPos:{X:0.000},{Y:0.000},0.000|FS:0,0{pins}|WCO:{_g54X:0.000},{_g54Y:0.000},0.000>")
+            : string.Create(inv, $"<{state}|WPos:{X - _g54X:0.000},{Y - _g54Y:0.000},0.000|FS:0,0{pins}|WCO:{_g54X:0.000},{_g54Y:0.000},0.000>");
     }
 
     private readonly object _txLock = new();
